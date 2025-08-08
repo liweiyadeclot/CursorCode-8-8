@@ -74,7 +74,7 @@ class LoginAutomation:
         if title in self.title_id_mapping:
             return self.title_id_mapping[title]
         else:
-            logger.warning(f"未找到标题 '{title}' 对应的ID映射")
+            logger.warning(f"未找到标题 '{title}' 对应的ID映射，请检查标题-ID映射文件")
             return ""
     
     def clean_value_string(self, value) -> str:
@@ -172,6 +172,684 @@ class LoginAutomation:
                     await asyncio.sleep(RETRY_DELAY)
         
         logger.error(f"填写输入框最终失败: {element_id}")
+    
+    async def fill_date_input(self, element_id: str, value: str, retries: int = MAX_RETRIES):
+        """
+        填写日期输入框（直接填写值，不使用日期选择器）
+        
+        Args:
+            element_id: 日期输入框的ID
+            value: 要填写的日期值（格式：yyyy-mm-dd）
+            retries: 重试次数
+        """
+        logger.info(f"开始填写日期输入框: {element_id} = {value}")
+        
+        for attempt in range(retries):
+            try:
+                logger.info(f"尝试填写日期输入框 (尝试 {attempt + 1}/{retries}): {element_id}")
+                
+                # 方法1: 等待元素出现后再填写
+                try:
+                    logger.info(f"等待元素出现: {element_id}")
+                    # 等待元素出现，最多等待5秒
+                    await self.page.wait_for_selector(f"#{element_id}", timeout=5000)
+                    logger.info(f"元素已出现，开始填写: {element_id}")
+                    
+                    # 直接尝试填写
+                    await self.page.fill(f"#{element_id}", "")
+                    await self.page.fill(f"#{element_id}", value)
+                    logger.info(f"✓ 在主页面成功填写日期输入框 {element_id}: {value}")
+                    return
+                except Exception as e:
+                    logger.debug(f"等待元素出现失败: {e}")
+                
+                # 方法2: 通过JavaScript直接设置值（适用于readonly的日期输入框）
+                try:
+                    logger.info(f"尝试通过JavaScript设置值: {element_id}")
+                    js_code = f"""
+                    (function() {{
+                        var element = document.getElementById('{element_id}');
+                        if (element) {{
+                            console.log('找到元素:', element);
+                            element.value = '{value}';
+                            // 触发change事件
+                            var event = new Event('change', {{ bubbles: true }});
+                            element.dispatchEvent(event);
+                            // 触发input事件
+                            var inputEvent = new Event('input', {{ bubbles: true }});
+                            element.dispatchEvent(inputEvent);
+                            return true;
+                        }} else {{
+                            console.log('未找到元素:', '{element_id}');
+                            return false;
+                        }}
+                    }})();
+                    """
+                    result = await self.page.evaluate(js_code)
+                    if result:
+                        logger.info(f"✓ 通过JavaScript成功填写日期输入框 {element_id}: {value}")
+                        return
+                    else:
+                        logger.debug(f"JavaScript未找到元素: {element_id}")
+                except Exception as e:
+                    logger.debug(f"JavaScript填写失败: {e}")
+                
+                # 方法3: 通过属性选择器查找
+                try:
+                    logger.info(f"尝试通过dateinput属性查找: {element_id}")
+                    # 查找具有dateinput属性的输入框
+                    selector = f"input[dateinput='true'][id='{element_id}']"
+                    await self.page.fill(selector, "")
+                    await self.page.fill(selector, value)
+                    logger.info(f"✓ 通过dateinput属性成功填写日期输入框 {element_id}: {value}")
+                    return
+                except Exception as e:
+                    logger.debug(f"通过dateinput属性查找失败: {e}")
+                
+                # 方法4: 通过class查找
+                try:
+                    logger.info(f"尝试通过dateInput类查找: {element_id}")
+                    # 查找具有dateInput类的输入框
+                    selector = f"input.dateInput[id='{element_id}']"
+                    await self.page.fill(selector, "")
+                    await self.page.fill(selector, value)
+                    logger.info(f"✓ 通过dateInput类成功填写日期输入框 {element_id}: {value}")
+                    return
+                except Exception as e:
+                    logger.debug(f"通过dateInput类查找失败: {e}")
+                
+                # 方法5: 通过部分ID匹配查找
+                try:
+                    logger.info(f"尝试通过部分ID匹配查找: {element_id}")
+                    # 尝试查找包含element_id的元素
+                    selector = f"input[id*='{element_id}']"
+                    await self.page.fill(selector, "")
+                    await self.page.fill(selector, value)
+                    logger.info(f"✓ 通过部分ID匹配成功填写日期输入框 {element_id}: {value}")
+                    return
+                except Exception as e:
+                    logger.debug(f"通过部分ID匹配查找失败: {e}")
+                
+                # 方法6: 如果主页面找不到，再尝试在iframe中查找
+                frames = self.page.frames
+                logger.info(f"主页面查找失败，检查 {len(frames)} 个iframe")
+                
+                for i, frame in enumerate(frames):
+                    try:
+                        logger.debug(f"在iframe {i} 中查找: {frame.url or 'unnamed frame'}")
+                        
+                        # 在iframe中查找日期输入框
+                        input_element = frame.locator(f"#{element_id}").first
+                        if await input_element.count() > 0:
+                            # 对于日期输入框，先清除现有值，然后填写新值
+                            await input_element.fill("")
+                            await input_element.fill(value)
+                            logger.info(f"✓ 在iframe {i} 中成功填写日期输入框 {element_id}: {value}")
+                            return
+                        else:
+                            logger.debug(f"在iframe {i} 中未找到元素 {element_id}")
+                            
+                    except Exception as e:
+                        logger.debug(f"在iframe {i} 中查找失败: {e}")
+                        continue
+                
+                # 如果所有方法都失败，等待一下再重试
+                if attempt < retries - 1:
+                    logger.warning(f"填写日期输入框失败 (尝试 {attempt + 1}/{retries}): {element_id}")
+                    logger.info(f"等待 {RETRY_DELAY} 秒后重试...")
+                    await asyncio.sleep(RETRY_DELAY)
+                    
+                    # 额外等待页面加载
+                    await asyncio.sleep(2)
+                    
+            except Exception as e:
+                logger.warning(f"填写日期输入框异常 (尝试 {attempt + 1}/{retries}): {element_id} - {e}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(RETRY_DELAY)
+        
+        logger.error(f"填写日期输入框最终失败: {element_id}")
+        logger.info("建议检查：")
+        logger.info("1. 元素ID是否正确")
+        logger.info("2. 页面是否完全加载")
+        logger.info("3. 元素是否在iframe中")
+        logger.info("4. 是否需要先点击其他元素来显示日期输入框")
+        logger.info("5. 页面是否已经跳转到新页面")
+    
+    async def fill_readonly_date_input(self, element_id: str, value: str, retries: int = MAX_RETRIES):
+        """
+        填写只读日期输入框（通过点击日历控件选择日期）
+        
+        Args:
+            element_id: 日期输入框的ID
+            value: 要填写的日期值（格式：yyyy-mm-dd）
+            retries: 重试次数
+        """
+        logger.info(f"开始填写只读日期输入框: {element_id} = {value}")
+        
+        # 解析日期
+        try:
+            year, month, day = value.split('-')
+            year = int(year)
+            month = int(month)  # 1-12
+            day = int(day)
+            logger.info(f"解析日期: 年={year}, 月={month}, 日={day}")
+        except Exception as e:
+            logger.error(f"日期格式错误: {value}, 期望格式: yyyy-mm-dd")
+            return
+        
+        for attempt in range(retries):
+            try:
+                logger.info(f"尝试填写只读日期输入框 (尝试 {attempt + 1}/{retries}): {element_id}")
+                
+                # 1. 点击输入框，弹出日历
+                try:
+                    await self.page.click(f"#{element_id}")
+                    logger.info(f"✓ 成功点击日期输入框: {element_id}")
+                except Exception as e:
+                    logger.debug(f"点击日期输入框失败: {e}")
+                    # 尝试在iframe中点击
+                    frames = self.page.frames
+                    for i, frame in enumerate(frames):
+                        try:
+                            input_element = frame.locator(f"#{element_id}").first
+                            if await input_element.count() > 0:
+                                await input_element.click()
+                                logger.info(f"✓ 在iframe {i} 中成功点击日期输入框: {element_id}")
+                                break
+                        except Exception as e:
+                            logger.debug(f"在iframe {i} 中点击失败: {e}")
+                            continue
+                    else:
+                        logger.warning(f"无法点击日期输入框: {element_id}")
+                        continue
+                
+                # 2. 等待日历控件出现
+                try:
+                    await self.page.wait_for_selector("#ui-datepicker-div", state="visible", timeout=5000)
+                    logger.info("✓ jQuery UI日历控件已出现")
+                except Exception as e:
+                    logger.debug(f"等待jQuery UI日历控件失败: {e}")
+                    # 尝试其他可能的日历控件选择器
+                    calendar_selectors = [
+                        "#ui-datepicker-div",
+                        ".ui-datepicker",
+                        "[class*='datepicker']",
+                        "[id*='datepicker']"
+                    ]
+                    
+                    calendar_found = False
+                    for selector in calendar_selectors:
+                        try:
+                            await self.page.wait_for_selector(selector, state="visible", timeout=2000)
+                            logger.info(f"✓ 找到日历控件: {selector}")
+                            calendar_found = True
+                            break
+                        except Exception:
+                            continue
+                    
+                    if not calendar_found:
+                        logger.warning("未找到日历控件")
+                        continue
+                
+                # 3. 选择年份（基于实际HTML结构）
+                try:
+                    # 点击年份下拉框
+                    await self.page.click(".ui-datepicker-year")
+                    logger.info("✓ 点击年份下拉框")
+                    
+                    # 选择指定年份
+                    await self.page.click(f'option[value="{year}"]')
+                    logger.info(f"✓ 选择年份: {year}")
+                except Exception as e:
+                    logger.debug(f"选择年份失败: {e}")
+                    # 尝试其他年份选择方式
+                    try:
+                        # 直接点击年份文本
+                        await self.page.click(f'text={year}')
+                        logger.info(f"✓ 通过文本选择年份: {year}")
+                    except Exception as e2:
+                        logger.debug(f"通过文本选择年份也失败: {e2}")
+                        continue
+                
+                # 4. 选择月份（基于实际HTML结构）
+                try:
+                    # 点击月份下拉框
+                    await self.page.click(".ui-datepicker-month")
+                    logger.info("✓ 点击月份下拉框")
+                    
+                    # 选择指定月份（月份索引从0开始，所以需要减1）
+                    month_index = month - 1
+                    await self.page.click(f'option[value="{month_index}"]')
+                    logger.info(f"✓ 选择月份: {month} (索引: {month_index})")
+                except Exception as e:
+                    logger.debug(f"选择月份失败: {e}")
+                    # 尝试其他月份选择方式
+                    try:
+                        # 直接点击月份文本
+                        month_names = ["1月", "2月", "3月", "4月", "5月", "6月", 
+                                     "7月", "8月", "9月", "10月", "11月", "12月"]
+                        month_name = month_names[month - 1]
+                        await self.page.click(f'text={month_name}')
+                        logger.info(f"✓ 通过文本选择月份: {month_name}")
+                    except Exception as e2:
+                        logger.debug(f"通过文本选择月份也失败: {e2}")
+                        continue
+                
+                # 5. 选择日期（基于实际HTML结构）
+                try:
+                    # 根据实际HTML结构，日期是通过<a>标签实现的
+                    # 选择指定日期
+                    await self.page.click(f'#ui-datepicker-div a:has-text("{day}")')
+                    logger.info(f"✓ 选择日期: {day}")
+                    
+                    # 等待日期选择完成
+                    await asyncio.sleep(1)
+                    
+                    # 验证日期是否已填写
+                    try:
+                        current_value = await self.page.input_value(f"#{element_id}")
+                        logger.info(f"✓ 日期填写完成，当前值: {current_value}")
+                        return
+                    except Exception as e:
+                        logger.debug(f"验证日期值失败: {e}")
+                        # 如果验证失败，但操作看起来成功了，也返回
+                        logger.info("✓ 日期选择操作完成")
+                        return
+                        
+                except Exception as e:
+                    logger.debug(f"选择日期失败: {e}")
+                    # 尝试其他日期选择方式
+                    try:
+                        # 尝试点击包含日期的元素（基于实际HTML结构）
+                        await self.page.click(f'#ui-datepicker-div td[data-handler="selectDay"] a:has-text("{day}")')
+                        logger.info(f"✓ 通过data-handler选择日期: {day}")
+                        return
+                    except Exception as e2:
+                        logger.debug(f"通过data-handler选择日期也失败: {e2}")
+                        
+                        # 最后尝试：直接点击包含日期的td元素
+                        try:
+                            await self.page.click(f'#ui-datepicker-div td[data-handler="selectDay"] a[href="#"]:has-text("{day}")')
+                            logger.info(f"✓ 通过href选择日期: {day}")
+                            return
+                        except Exception as e3:
+                            logger.debug(f"通过href选择日期也失败: {e3}")
+                            continue
+                
+            except Exception as e:
+                logger.warning(f"填写只读日期输入框异常 (尝试 {attempt + 1}/{retries}): {element_id} - {e}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(RETRY_DELAY)
+        
+        logger.error(f"填写只读日期输入框最终失败: {element_id}")
+        logger.info("建议检查：")
+        logger.info("1. 日期输入框ID是否正确")
+        logger.info("2. 日历控件是否正确加载")
+        logger.info("3. 日期格式是否正确 (yyyy-mm-dd)")
+        logger.info("4. 是否需要先点击其他元素来显示日期输入框")
+
+    async def select_date_from_calendar(self, element_id: str, value: str, retries: int = MAX_RETRIES):
+        """
+        基于jQuery UI日历控件的精确日期选择方法
+        
+        Args:
+            element_id: 日期输入框的ID
+            value: 要填写的日期值（格式：yyyy-mm-dd）
+            retries: 重试次数
+        """
+        logger.info(f"开始使用jQuery UI日历控件选择日期: {element_id} = {value}")
+        
+        # 解析日期
+        try:
+            year, month, day = value.split('-')
+            year = int(year)
+            month = int(month)  # 1-12
+            day = int(day)
+            logger.info(f"解析日期: 年={year}, 月={month}, 日={day}")
+        except Exception as e:
+            logger.error(f"日期格式错误: {value}, 期望格式: yyyy-mm-dd")
+            return
+        
+        for attempt in range(retries):
+            try:
+                logger.info(f"尝试选择日期 (尝试 {attempt + 1}/{retries}): {element_id}")
+                
+                # 1. 点击输入框，弹出日历
+                target_frame = None
+                try:
+                    await self.page.click(f"#{element_id}")
+                    logger.info(f"✓ 在主页面成功点击日期输入框: {element_id}")
+                    target_frame = self.page
+                except Exception as e:
+                    logger.debug(f"主页面点击日期输入框失败: {e}")
+                    # 尝试在iframe中点击
+                    frames = self.page.frames
+                    for i, frame in enumerate(frames):
+                        try:
+                            input_element = frame.locator(f"#{element_id}").first
+                            if await input_element.count() > 0:
+                                await input_element.click()
+                                logger.info(f"✓ 在iframe {i} 中成功点击日期输入框: {element_id}")
+                                target_frame = frame
+                                break
+                        except Exception as e:
+                            logger.debug(f"在iframe {i} 中点击失败: {e}")
+                            continue
+                    else:
+                        logger.warning(f"无法点击日期输入框: {element_id}")
+                        continue
+                
+                # 2. 等待jQuery UI日历控件出现（在所有frame中查找）
+                calendar_found = False
+                calendar_frame = None
+                
+                # 首先在主页面查找
+                try:
+                    await self.page.wait_for_selector("#ui-datepicker-div", state="visible", timeout=3000)
+                    logger.info("✓ 在主页面找到jQuery UI日历控件")
+                    calendar_found = True
+                    calendar_frame = self.page
+                except Exception as e:
+                    logger.debug(f"主页面等待jQuery UI日历控件失败: {e}")
+                
+                # 如果主页面没找到，在所有iframe中查找
+                if not calendar_found:
+                    frames = self.page.frames
+                    logger.info(f"在主页面未找到日历控件，检查 {len(frames)} 个iframe")
+                    
+                    for i, frame in enumerate(frames):
+                        try:
+                            await frame.wait_for_selector("#ui-datepicker-div", state="visible", timeout=3000)
+                            logger.info(f"✓ 在iframe {i} 中找到jQuery UI日历控件")
+                            calendar_found = True
+                            calendar_frame = frame
+                            break
+                        except Exception as e:
+                            logger.debug(f"iframe {i} 等待jQuery UI日历控件失败: {e}")
+                            continue
+                
+                # 如果还是没找到，尝试其他选择器
+                if not calendar_found:
+                    calendar_selectors = [
+                        "#ui-datepicker-div",
+                        ".ui-datepicker",
+                        "div.ui-datepicker.ui-widget",
+                        "[class*='datepicker']",
+                        "[id*='datepicker']"
+                    ]
+                    
+                    # 在主页面尝试其他选择器
+                    for selector in calendar_selectors:
+                        try:
+                            await self.page.wait_for_selector(selector, state="visible", timeout=2000)
+                            logger.info(f"✓ 在主页面找到日历控件: {selector}")
+                            calendar_found = True
+                            calendar_frame = self.page
+                            break
+                        except Exception:
+                            continue
+                    
+                    # 在iframe中尝试其他选择器
+                    if not calendar_found:
+                        for i, frame in enumerate(frames):
+                            for selector in calendar_selectors:
+                                try:
+                                    await frame.wait_for_selector(selector, state="visible", timeout=2000)
+                                    logger.info(f"✓ 在iframe {i} 中找到日历控件: {selector}")
+                                    calendar_found = True
+                                    calendar_frame = frame
+                                    break
+                                except Exception:
+                                    continue
+                            if calendar_found:
+                                break
+                
+                if not calendar_found:
+                    logger.warning("未找到日历控件，等待更长时间...")
+                    # 等待更长时间，然后再次检查
+                    await asyncio.sleep(2)
+                    
+                    # 再次检查所有frame
+                    try:
+                        await self.page.wait_for_selector("#ui-datepicker-div", state="visible", timeout=5000)
+                        logger.info("✓ 等待后在主页面找到jQuery UI日历控件")
+                        calendar_found = True
+                        calendar_frame = self.page
+                    except Exception:
+                        for i, frame in enumerate(frames):
+                            try:
+                                await frame.wait_for_selector("#ui-datepicker-div", state="visible", timeout=3000)
+                                logger.info(f"✓ 等待后在iframe {i} 中找到jQuery UI日历控件")
+                                calendar_found = True
+                                calendar_frame = frame
+                                break
+                            except Exception:
+                                continue
+                    
+                    if not calendar_found:
+                        logger.warning("仍未找到日历控件")
+                        continue
+                
+                # 3. 选择年份（基于实际HTML结构）
+                try:
+                    # 使用select_option方法选择年份（参考您提供的代码）
+                    await calendar_frame.select_option(".ui-datepicker-year", str(year))
+                    logger.info(f"✓ 选择年份: {year}")
+                    
+                    # 等待年份选择生效
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.debug(f"select_option选择年份失败: {e}")
+                    # 尝试其他年份选择方式
+                    try:
+                        # 方法2：直接点击年份下拉框，然后点击选项
+                        await calendar_frame.click(".ui-datepicker-year")
+                        logger.info("✓ 点击年份下拉框")
+                        
+                        # 等待下拉框展开
+                        await asyncio.sleep(0.5)
+                        
+                        # 选择指定年份
+                        year_option = calendar_frame.locator(f'.ui-datepicker-year option[value="{year}"]').first
+                        if await year_option.count() > 0:
+                            await year_option.click()
+                            logger.info(f"✓ 通过点击选项选择年份: {year}")
+                        else:
+                            # 如果找不到选项，尝试直接点击年份文本
+                            await calendar_frame.click(f'text={year}')
+                            logger.info(f"✓ 通过文本选择年份: {year}")
+                    except Exception as e2:
+                        logger.debug(f"点击选择年份也失败: {e2}")
+                        continue
+                
+                # 4. 选择月份（基于实际HTML结构）
+                try:
+                    # 使用select_option方法选择月份（参考您提供的代码）
+                    month_index = month - 1  # 月份索引从0开始
+                    await calendar_frame.select_option(".ui-datepicker-month", str(month_index))
+                    logger.info(f"✓ 选择月份: {month} (索引: {month_index})")
+                    
+                    # 等待月份选择生效
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.debug(f"select_option选择月份失败: {e}")
+                    # 尝试其他月份选择方式
+                    try:
+                        # 方法2：直接点击月份下拉框，然后点击选项
+                        await calendar_frame.click(".ui-datepicker-month")
+                        logger.info("✓ 点击月份下拉框")
+                        
+                        # 等待下拉框展开
+                        await asyncio.sleep(0.5)
+                        
+                        # 选择指定月份（月份索引从0开始，所以需要减1）
+                        month_index = month - 1
+                        month_option = calendar_frame.locator(f'.ui-datepicker-month option[value="{month_index}"]').first
+                        if await month_option.count() > 0:
+                            await month_option.click()
+                            logger.info(f"✓ 通过点击选项选择月份: {month} (索引: {month_index})")
+                        else:
+                            # 如果找不到选项，尝试直接点击月份文本
+                            month_names = ["1月", "2月", "3月", "4月", "5月", "6月", 
+                                         "7月", "8月", "9月", "10月", "11月", "12月"]
+                            month_name = month_names[month - 1]
+                            await calendar_frame.click(f'text={month_name}')
+                            logger.info(f"✓ 通过文本选择月份: {month_name}")
+                    except Exception as e2:
+                        logger.debug(f"点击选择月份也失败: {e2}")
+                        continue
+                
+                # 5. 选择日期（基于实际HTML结构）
+                try:
+                    # 等待日历更新
+                    await asyncio.sleep(0.5)
+                    
+                    # 根据实际HTML结构，日期是通过<a>标签实现的
+                    # 尝试多种日期选择方式
+                    date_selectors = [
+                        f'#ui-datepicker-div a:has-text("{day}")',
+                        f'#ui-datepicker-div td[data-handler="selectDay"] a:has-text("{day}")',
+                        f'#ui-datepicker-div td[data-handler="selectDay"] a[href="#"]:has-text("{day}")',
+                        f'#ui-datepicker-div .ui-state-default:has-text("{day}")',
+                        f'#ui-datepicker-div a.ui-state-default:has-text("{day}")',
+                        f'//a[text()="{day}"]'  # 使用XPath，参考您提供的代码
+                    ]
+                    
+                    date_clicked = False
+                    for selector in date_selectors:
+                        try:
+                            if selector.startswith('//'):
+                                # 使用XPath选择器
+                                date_element = calendar_frame.locator(selector).first
+                            else:
+                                # 使用CSS选择器
+                                date_element = calendar_frame.locator(selector).first
+                            
+                            if await date_element.count() > 0:
+                                await date_element.click()
+                                logger.info(f"✓ 成功选择日期: {day} (使用选择器: {selector})")
+                                date_clicked = True
+                                break
+                        except Exception as e:
+                            logger.debug(f"日期选择器 {selector} 失败: {e}")
+                            continue
+                    
+                    if not date_clicked:
+                        # 如果所有选择器都失败，尝试通过JavaScript选择
+                        try:
+                            js_code = f"""
+                            (function() {{
+                                var datepicker = document.getElementById('ui-datepicker-div');
+                                if (datepicker) {{
+                                    var dayLinks = datepicker.querySelectorAll('a.ui-state-default');
+                                    for (var i = 0; i < dayLinks.length; i++) {{
+                                        if (dayLinks[i].textContent.trim() === '{day}') {{
+                                            dayLinks[i].click();
+                                            return true;
+                                        }}
+                                    }}
+                                }}
+                                return false;
+                            }})();
+                            """
+                            result = await calendar_frame.evaluate(js_code)
+                            if result:
+                                logger.info(f"✓ 通过JavaScript成功选择日期: {day}")
+                                date_clicked = True
+                        except Exception as e:
+                            logger.debug(f"JavaScript选择日期失败: {e}")
+                    
+                    if date_clicked:
+                        # 等待日期选择完成
+                        await asyncio.sleep(1)
+                        
+                        # 验证日期是否已填写
+                        try:
+                            current_value = await target_frame.input_value(f"#{element_id}")
+                            logger.info(f"✓ 日期填写完成，当前值: {current_value}")
+                            return
+                        except Exception as e:
+                            logger.debug(f"验证日期值失败: {e}")
+                            # 如果验证失败，但操作看起来成功了，也返回
+                            logger.info("✓ 日期选择操作完成")
+                            return
+                    else:
+                        logger.warning(f"无法选择日期: {day}")
+                        continue
+                        
+                except Exception as e:
+                    logger.debug(f"选择日期失败: {e}")
+                    continue
+                
+            except Exception as e:
+                logger.warning(f"选择日期异常 (尝试 {attempt + 1}/{retries}): {element_id} - {e}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(RETRY_DELAY)
+        
+        logger.error(f"选择日期最终失败: {element_id}")
+        logger.info("建议检查：")
+        logger.info("1. 日期输入框ID是否正确")
+        logger.info("2. 日历控件是否正确加载")
+        logger.info("3. 日期格式是否正确 (yyyy-mm-dd)")
+        logger.info("4. 是否需要先点击其他元素来显示日期输入框")
+    
+    async def click_radio_button(self, element_id: str, retries: int = MAX_RETRIES):
+        """
+        点击radio按钮
+        
+        Args:
+            element_id: radio按钮的ID或value值
+            retries: 重试次数
+        """
+        logger.info(f"尝试点击radio按钮: {element_id}")
+        
+        for attempt in range(retries):
+            try:
+                # 获取所有iframe信息
+                frames = self.page.frames
+                logger.info(f"找到 {len(frames)} 个iframe")
+                
+                # 方法1: 在主页面通过name和value查找radio按钮
+                try:
+                    logger.info(f"在主页面通过name和value查找radio按钮")
+                    radio_selector = f"input[type='radio'][name*='school_area'][value='{element_id}']"
+                    radio_element = self.page.locator(radio_selector).first
+                    if await radio_element.count() > 0:
+                        await radio_element.click()
+                        logger.info(f"✓ 在主页面成功点击radio按钮: {element_id}")
+                        await asyncio.sleep(1)
+                        return
+                except Exception as e:
+                    logger.debug(f"主页面查找radio按钮失败: {e}")
+                
+                # 方法2: 在iframe中通过name和value查找radio按钮
+                logger.info(f"在iframe中通过name和value查找radio按钮")
+                for i, frame in enumerate(frames):
+                    try:
+                        radio_selector = f"input[type='radio'][name*='school_area'][value='{element_id}']"
+                        radio_element = frame.locator(radio_selector).first
+                        if await radio_element.count() > 0:
+                            await radio_element.click()
+                            logger.info(f"✓ 在iframe {i} 中成功点击radio按钮: {element_id}")
+                            await asyncio.sleep(1)
+                            return
+                    except Exception as e:
+                        logger.debug(f"在iframe {i} 中查找radio按钮失败: {e}")
+                        continue
+                
+                logger.warning(f"未找到radio按钮: {element_id}")
+                logger.info("建议检查：")
+                logger.info("1. 元素value值是否正确")
+                logger.info("2. 元素是否在iframe中")
+                logger.info("3. 元素是否已经加载")
+                return
+                
+            except Exception as e:
+                logger.warning(f"点击radio按钮失败 (尝试 {attempt + 1}/{retries}): {element_id} - {e}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(RETRY_DELAY)
+                else:
+                    logger.error(f"点击radio按钮最终失败: {element_id}")
     
     async def click_button_by_btnname(self, btnname: str, retries: int = MAX_RETRIES):
         """
@@ -401,11 +1079,27 @@ class LoginAutomation:
         if pd.isna(value) or value == "":
             return
             
+        value_str = self.clean_value_string(value)
+        
+        # 处理radio按钮点击操作（以$$开头）- 优先处理
+        if value_str.startswith(RADIO_BUTTON_PREFIX):
+            # 提取$$之后的内容作为标题
+            radio_title = value_str[len(RADIO_BUTTON_PREFIX):]  # 去掉$$前缀
+            logger.info(f"检测到radio按钮操作，使用$$后的内容作为标题: {radio_title}")
+            
+            # 根据标题查找对应的radio按钮ID
+            radio_element_id = self.get_object_id(radio_title)
+            if radio_element_id:
+                logger.info(f"找到radio按钮ID: {radio_element_id}")
+                await self.click_radio_button(radio_element_id)
+            else:
+                logger.warning(f"未找到标题 '{radio_title}' 对应的radio按钮ID映射，请检查标题-ID映射表中是否包含此标题")
+            return
+        
+        # 对于其他情况，先获取element_id
         element_id = self.get_object_id(title)
         if not element_id:
             return
-            
-        value_str = self.clean_value_string(value)
         
         # 特殊处理：网上预约报账按钮（优先处理）
         if title == "网上预约报账按钮":
@@ -457,9 +1151,9 @@ class LoginAutomation:
             except Exception as e:
                 logger.warning(f"输入回车键失败: {e}")
             
-            # 等待银行卡选择弹窗出现
+            # 等待银行卡选择弹窗出现（缩减等待时间）
             logger.info("等待银行卡选择弹窗出现...")
-            await asyncio.sleep(2)
+            await asyncio.sleep(BANK_CARD_DIALOG_WAIT)
             
             # 检查是否需要选择银行卡
             # 创建当前记录的DataFrame
@@ -467,10 +1161,20 @@ class LoginAutomation:
             await self.handle_bank_card_selection_for_transfer(value_str, current_record)
             return
         
+
+        
         # 处理按钮点击操作（以$开头）
         if value_str.startswith(BUTTON_PREFIX):
             button_value = value_str[len(BUTTON_PREFIX):]  # 去掉前缀符号
             await self.click_button(element_id)
+            return
+        
+        # 特殊处理：科目和金额填写（需要等待页面加载）
+        if title == "科目" or title == "金额":
+            logger.info(f"特殊处理{title}填写，等待页面加载完成...")
+            await asyncio.sleep(SUBJECT_AMOUNT_WAIT)
+            logger.info(f"页面加载等待完成，开始填写{title}: {value_str}")
+            await self.fill_input(element_id, value_str)
             return
         
         # 处理系统导览框点击操作（以@开头）
@@ -499,6 +1203,28 @@ class LoginAutomation:
                 await self.select_dropdown(element_id, value_str)
                 logger.info(f"下拉框直接选择: {title} = {value_str}")
             return
+        
+        # 处理日期输入框（检查element_id是否包含日期相关的标识）
+        if (element_id and ("date" in element_id.lower() or "startdate" in element_id.lower() or "enddate" in element_id.lower() or 
+                           element_id.endswith("_startdate") or element_id.endswith("_enddate") or
+                           "temp-startdate" in element_id or "temp-enddate" in element_id)):
+            logger.info(f"检测到日期输入框: {element_id} = {value_str}")
+            
+            # 优先尝试新的jQuery UI日历控件方法
+            try:
+                await self.select_date_from_calendar(element_id, value_str)
+                return
+            except Exception as e:
+                logger.debug(f"jQuery UI日历控件方法失败，尝试只读日期输入框方法: {e}")
+                # 如果新方法失败，回退到只读方法
+                try:
+                    await self.fill_readonly_date_input(element_id, value_str)
+                    return
+                except Exception as e2:
+                    logger.debug(f"只读日期输入框方法也失败，尝试普通方法: {e2}")
+                    # 如果只读方法也失败，回退到普通方法
+                    await self.fill_date_input(element_id, value_str)
+                    return
         
         # 处理普通输入框
         await self.fill_input(element_id, value_str)
@@ -579,8 +1305,8 @@ class LoginAutomation:
         try:
             logger.info("开始检测银行卡选择弹窗...")
             
-            # 等待更长时间，因为弹窗可能需要时间出现
-            await asyncio.sleep(3)
+            # 等待银行卡选择弹窗出现（缩减等待时间）
+            await asyncio.sleep(BANK_CARD_DIALOG_WAIT)
             
             # 等待银行卡选择弹窗出现 - 尝试多种选择器
             bank_dialog_found = False
@@ -650,8 +1376,8 @@ class LoginAutomation:
             
             logger.info(f"开始选择卡号尾号: {card_tail_value}")
             
-            # 等待弹窗完全加载
-            await asyncio.sleep(1)
+            # 等待弹窗完全加载（缩减等待时间）
+            await asyncio.sleep(BANK_CARD_SELECTION_WAIT)
             
             # 尝试多种方式查找和点击radio按钮
             radio_clicked = False
@@ -748,7 +1474,7 @@ class LoginAutomation:
         try:
             logger.info(f"开始检测转卡信息工号 {work_id} 的银行卡选择弹窗...")
             
-            # 等待银行卡选择弹窗出现 - 使用更精确的选择器
+            # 等待银行卡选择弹窗出现 - 只在iframe中查找
             bank_dialog_found = False
             selectors_to_try = [
                 "#paybankdiv",                           # 主要的银行卡选择弹窗ID
@@ -759,37 +1485,46 @@ class LoginAutomation:
                 "div.ui-dialog-content"                  # UI对话框内容
             ]
             
-            # 方法1: 在主页面等待弹窗出现
-            logger.info("方法1: 在主页面等待银行卡选择弹窗出现...")
-            for selector in selectors_to_try:
+            # 在所有iframe中查找弹窗
+            logger.info("在所有iframe中查找银行卡选择弹窗...")
+            frames = self.page.frames
+            logger.info(f"找到 {len(frames)} 个iframe")
+            
+            target_frame = None
+            for i, frame in enumerate(frames):
+                logger.info(f"检查iframe {i}: {frame.url}")
                 try:
-                    await self.page.wait_for_selector(selector, timeout=5000)
-                    logger.info(f"✓ 在主页面检测到银行卡选择弹窗，使用选择器: {selector}")
-                    bank_dialog_found = True
-                    break
+                    for selector in selectors_to_try:
+                        try:
+                            await frame.wait_for_selector(selector, timeout=2000)
+                            logger.info(f"✓ 在iframe {i} 中检测到银行卡选择弹窗，使用选择器: {selector}")
+                            bank_dialog_found = True
+                            target_frame = frame
+                            break
+                        except Exception as e:
+                            logger.debug(f"iframe {i} 选择器 {selector} 未找到: {e}")
+                            continue
+                    if bank_dialog_found:
+                        break
                 except Exception as e:
-                    logger.debug(f"主页面选择器 {selector} 未找到: {e}")
+                    logger.debug(f"检查iframe {i} 失败: {e}")
                     continue
             
-            # 方法2: 在所有iframe中查找弹窗
+            # 如果没找到，尝试检测已存在的弹窗
             if not bank_dialog_found:
-                logger.info("方法2: 在所有iframe中查找银行卡选择弹窗...")
-                frames = self.page.frames
-                logger.info(f"找到 {len(frames)} 个iframe")
-                
+                logger.info("尝试检测已存在的银行卡选择弹窗...")
                 for i, frame in enumerate(frames):
-                    logger.info(f"检查iframe {i}: {frame.url}")
                     try:
                         for selector in selectors_to_try:
                             try:
-                                await frame.wait_for_selector(selector, timeout=2000)
-                                logger.info(f"✓ 在iframe {i} 中检测到银行卡选择弹窗，使用选择器: {selector}")
-                                bank_dialog_found = True
-                                # 将当前frame设置为活动frame
-                                self.current_frame = frame
-                                break
+                                elements = await frame.locator(selector).all()
+                                if len(elements) > 0:
+                                    logger.info(f"✓ 在iframe {i} 中检测到已存在的银行卡选择弹窗，使用选择器: {selector}")
+                                    bank_dialog_found = True
+                                    target_frame = frame
+                                    break
                             except Exception as e:
-                                logger.debug(f"iframe {i} 选择器 {selector} 未找到: {e}")
+                                logger.debug(f"iframe {i} 检测选择器 {selector} 失败: {e}")
                                 continue
                         if bank_dialog_found:
                             break
@@ -797,123 +1532,50 @@ class LoginAutomation:
                         logger.debug(f"检查iframe {i} 失败: {e}")
                         continue
             
-            # 方法3: 如果方法1和2失败，尝试检测弹窗是否已经存在
+            # 检查是否有"请选择卡号"的标题
             if not bank_dialog_found:
-                logger.info("方法3: 尝试检测已存在的银行卡选择弹窗...")
-                # 在主页面检测
-                for selector in selectors_to_try:
+                logger.info("检查是否有'请选择卡号'标题...")
+                for i, frame in enumerate(frames):
                     try:
-                        elements = await self.page.locator(selector).all()
-                        if len(elements) > 0:
-                            logger.info(f"✓ 在主页面检测到已存在的银行卡选择弹窗，使用选择器: {selector}")
+                        title_elements = await frame.locator("text=请选择卡号").all()
+                        if len(title_elements) > 0:
+                            logger.info(f"✓ 在iframe {i} 中检测到'请选择卡号'标题")
                             bank_dialog_found = True
+                            target_frame = frame
                             break
                     except Exception as e:
-                        logger.debug(f"主页面检测选择器 {selector} 失败: {e}")
+                        logger.debug(f"iframe {i} 检测'请选择卡号'标题失败: {e}")
                         continue
-                
-                # 在iframe中检测
-                if not bank_dialog_found:
-                    frames = self.page.frames
-                    for i, frame in enumerate(frames):
-                        try:
-                            for selector in selectors_to_try:
-                                try:
-                                    elements = await frame.locator(selector).all()
-                                    if len(elements) > 0:
-                                        logger.info(f"✓ 在iframe {i} 中检测到已存在的银行卡选择弹窗，使用选择器: {selector}")
-                                        bank_dialog_found = True
-                                        self.current_frame = frame
-                                        break
-                                except Exception as e:
-                                    logger.debug(f"iframe {i} 检测选择器 {selector} 失败: {e}")
-                                    continue
-                            if bank_dialog_found:
-                                break
-                        except Exception as e:
-                            logger.debug(f"检查iframe {i} 失败: {e}")
-                            continue
             
-            # 方法4: 检查是否有"请选择卡号"的标题
+            # 检查是否有radio按钮
             if not bank_dialog_found:
-                logger.info("方法4: 检查是否有'请选择卡号'标题...")
-                # 在主页面检查
-                try:
-                    title_elements = await self.page.locator("text=请选择卡号").all()
-                    if len(title_elements) > 0:
-                        logger.info("✓ 在主页面检测到'请选择卡号'标题")
-                        bank_dialog_found = True
-                except Exception as e:
-                    logger.debug(f"主页面检测'请选择卡号'标题失败: {e}")
-                
-                # 在iframe中检查
-                if not bank_dialog_found:
-                    frames = self.page.frames
-                    for i, frame in enumerate(frames):
-                        try:
-                            title_elements = await frame.locator("text=请选择卡号").all()
-                            if len(title_elements) > 0:
-                                logger.info(f"✓ 在iframe {i} 中检测到'请选择卡号'标题")
-                                bank_dialog_found = True
-                                self.current_frame = frame
-                                break
-                        except Exception as e:
-                            logger.debug(f"iframe {i} 检测'请选择卡号'标题失败: {e}")
-                            continue
+                logger.info("检查是否有银行卡选择radio按钮...")
+                for i, frame in enumerate(frames):
+                    try:
+                        radio_elements = await frame.locator("input[type='radio'][name='rdoacnt']").all()
+                        if len(radio_elements) > 0:
+                            logger.info(f"✓ 在iframe {i} 中检测到 {len(radio_elements)} 个银行卡选择radio按钮")
+                            bank_dialog_found = True
+                            target_frame = frame
+                            break
+                    except Exception as e:
+                        logger.debug(f"iframe {i} 检测radio按钮失败: {e}")
+                        continue
             
-            # 方法5: 检查是否有radio按钮
+            # 检查是否有ui-dialog类的元素
             if not bank_dialog_found:
-                logger.info("方法5: 检查是否有银行卡选择radio按钮...")
-                # 在主页面检查
-                try:
-                    radio_elements = await self.page.locator("input[type='radio'][name='rdoacnt']").all()
-                    if len(radio_elements) > 0:
-                        logger.info(f"✓ 在主页面检测到 {len(radio_elements)} 个银行卡选择radio按钮")
-                        bank_dialog_found = True
-                except Exception as e:
-                    logger.debug(f"主页面检测radio按钮失败: {e}")
-                
-                # 在iframe中检查
-                if not bank_dialog_found:
-                    frames = self.page.frames
-                    for i, frame in enumerate(frames):
-                        try:
-                            radio_elements = await frame.locator("input[type='radio'][name='rdoacnt']").all()
-                            if len(radio_elements) > 0:
-                                logger.info(f"✓ 在iframe {i} 中检测到 {len(radio_elements)} 个银行卡选择radio按钮")
-                                bank_dialog_found = True
-                                self.current_frame = frame
-                                break
-                        except Exception as e:
-                            logger.debug(f"iframe {i} 检测radio按钮失败: {e}")
-                            continue
-            
-            # 方法6: 检查是否有ui-dialog类的元素
-            if not bank_dialog_found:
-                logger.info("方法6: 检查是否有ui-dialog类的元素...")
-                # 在主页面检查
-                try:
-                    dialog_elements = await self.page.locator("div.ui-dialog").all()
-                    if len(dialog_elements) > 0:
-                        logger.info(f"✓ 在主页面检测到 {len(dialog_elements)} 个ui-dialog元素")
-                        bank_dialog_found = True
-                except Exception as e:
-                    logger.debug(f"主页面检测ui-dialog元素失败: {e}")
-                
-                # 在iframe中检查
-                if not bank_dialog_found:
-                    frames = self.page.frames
-                    for i, frame in enumerate(frames):
-                        try:
-                            dialog_elements = await frame.locator("div.ui-dialog").all()
-                            if len(dialog_elements) > 0:
-                                logger.info(f"✓ 在iframe {i} 中检测到 {len(dialog_elements)} 个ui-dialog元素")
-                                bank_dialog_found = True
-                                self.current_frame = frame
-                                break
-                        except Exception as e:
-                            logger.debug(f"iframe {i} 检测ui-dialog元素失败: {e}")
-                            continue
+                logger.info("检查是否有ui-dialog类的元素...")
+                for i, frame in enumerate(frames):
+                    try:
+                        dialog_elements = await frame.locator("div.ui-dialog").all()
+                        if len(dialog_elements) > 0:
+                            logger.info(f"✓ 在iframe {i} 中检测到 {len(dialog_elements)} 个ui-dialog元素")
+                            bank_dialog_found = True
+                            target_frame = frame
+                            break
+                    except Exception as e:
+                        logger.debug(f"iframe {i} 检测ui-dialog元素失败: {e}")
+                        continue
             
             if not bank_dialog_found:
                 logger.warning("未检测到银行卡选择弹窗，可能只有一张卡或弹窗未出现")
@@ -956,8 +1618,6 @@ class LoginAutomation:
                 logger.warning("未找到卡号尾号信息，将自动选择第一张银行卡")
                 # 自动选择第一张银行卡
                 try:
-                    # 确定在哪个frame中操作
-                    target_frame = getattr(self, 'current_frame', self.page)
                     radio_buttons = await target_frame.locator("input[type='radio'][name='rdoacnt']").all()
                     if len(radio_buttons) > 0:
                         await radio_buttons[0].click()
@@ -974,11 +1634,8 @@ class LoginAutomation:
             
             logger.info(f"开始选择卡号尾号: {card_tail_value}")
             
-            # 等待弹窗完全加载
-            await asyncio.sleep(1)
-            
-            # 确定在哪个frame中操作
-            target_frame = getattr(self, 'current_frame', self.page)
+            # 等待弹窗完全加载（缩减等待时间）
+            await asyncio.sleep(BANK_CARD_SELECTION_WAIT)
             
             # 尝试多种方式查找和点击radio按钮
             radio_clicked = False
@@ -1083,37 +1740,21 @@ class LoginAutomation:
             
             confirm_clicked = False
             
-            # 首先在活动frame中查找（如果有的话）
-            target_frame = getattr(self, 'current_frame', self.page)
+            # 首先在主页面查找
             for selector in confirm_selectors:
                 try:
-                    confirm_button = target_frame.locator(selector).first
+                    confirm_button = self.page.locator(selector).first
                     if await confirm_button.count() > 0:
                         await confirm_button.click()
-                        logger.info(f"✓ 在活动frame中成功点击确定按钮 (使用选择器: {selector})")
+                        logger.info(f"✓ 在主页面成功点击确定按钮 (使用选择器: {selector})")
                         await asyncio.sleep(1)
                         confirm_clicked = True
                         break
                 except Exception as e:
-                    logger.debug(f"活动frame确定按钮选择器 {selector} 失败: {e}")
+                    logger.debug(f"主页面确定按钮选择器 {selector} 失败: {e}")
                     continue
             
-            # 如果活动frame中没找到，尝试在主页面查找
-            if not confirm_clicked:
-                for selector in confirm_selectors:
-                    try:
-                        confirm_button = self.page.locator(selector).first
-                        if await confirm_button.count() > 0:
-                            await confirm_button.click()
-                            logger.info(f"✓ 在主页面成功点击确定按钮 (使用选择器: {selector})")
-                            await asyncio.sleep(1)
-                            confirm_clicked = True
-                            break
-                    except Exception as e:
-                        logger.debug(f"主页面确定按钮选择器 {selector} 失败: {e}")
-                        continue
-            
-            # 如果主页面也没找到，尝试在所有iframe中查找
+            # 如果主页面没找到，尝试在所有iframe中查找
             if not confirm_clicked:
                 frames = self.page.frames
                 for i, frame in enumerate(frames):
@@ -1232,14 +1873,27 @@ class LoginAutomation:
         first_row = group_data.iloc[0]
         if "登录界面工号" in group_data.columns and pd.notna(first_row["登录界面工号"]):
             # 处理登录流程
+            logger.info("检测到登录信息，开始处理登录流程")
             await self.handle_login_with_captcha(group_data)
+            
+            # 登录完成后，继续处理该序号下的其他行（如果有的话）
+            if len(group_data) > 1:
+                logger.info(f"登录完成，继续处理序号 {sequence_num} 的剩余 {len(group_data) - 1} 行数据")
+                # 处理剩余的行（跳过第一行，因为已经处理了登录）
+                remaining_data = group_data.iloc[1:]
+                await self.process_subsequences(remaining_data)
         else:
             # 处理子序列逻辑
+            logger.info("未检测到登录信息，直接处理子序列逻辑")
             await self.process_subsequences(group_data)
     
     async def process_subsequences(self, group_data: pd.DataFrame):
         """
-        处理子序列逻辑：从子序列开始到子序列结束，然后跳转到下一行相同序号的子序列开始
+        处理子序列逻辑：
+        1. 当检测到"子序列开始"时，开始子序列处理
+        2. 处理当前行的所有列（从子序列开始列的下一列开始）
+        3. 如果遇到"子序列结束"标记，继续在同一行向右处理
+        4. 重复步骤2-3，直到没有更多的子序列行
         
         Args:
             group_data: 同一序号下的所有数据行
@@ -1251,53 +1905,52 @@ class LoginAutomation:
         i = 0
         while i < len(rows):
             row = rows[i]
-            logger.info(f"处理第 {i+1} 行数据")
+            current_sequence = row.get(SEQUENCE_COL, None)
+            logger.info(f"处理第 {i+1} 行数据，序号: {current_sequence}")
             
-            # 查找子序列开始列的位置
+            # 查找子序列开始和结束列的位置
             subsequence_start_idx = None
             subsequence_end_idx = None
             
             try:
                 subsequence_start_idx = columns.index(SUBSEQUENCE_START_COL)
             except ValueError:
-                # 如果没有子序列开始列，按普通方式处理这一行
-                await self.process_single_row(row, columns)
-                i += 1
-                continue
+                logger.debug("未找到子序列开始列，按普通方式处理")
+                subsequence_start_idx = None
             
             try:
                 subsequence_end_idx = columns.index(SUBSEQUENCE_END_COL)
             except ValueError:
-                # 如果没有子序列结束列，按普通方式处理这一行
-                await self.process_single_row(row, columns)
-                i += 1
-                continue
+                logger.debug("未找到子序列结束列")
+                subsequence_end_idx = None
             
-            # 处理从子序列开始到子序列结束的列
+            # 处理当前行的列
             col_idx = 0
             while col_idx < len(columns):
                 col = columns[col_idx]
                 
-                # 跳过序号列
-                if col == SEQUENCE_COL:
+                # 跳过序号列和处理进度列
+                if col == SEQUENCE_COL or col == "处理进度":
                     col_idx += 1
                     continue
                 
                 # 如果到达子序列开始列，开始处理子序列
                 if col_idx == subsequence_start_idx:
-                    # 处理从子序列开始到子序列结束的所有列
-                    for subseq_col_idx in range(subsequence_start_idx, min(subsequence_end_idx + 1, len(columns))):
-                        subseq_col = columns[subseq_col_idx]
-                        if subseq_col not in [SUBSEQUENCE_START_COL, SUBSEQUENCE_END_COL]:
-                            value = row[subseq_col]
-                            if pd.notna(value) and value != "":
-                                value_str = self.clean_value_string(value)
-                                logger.info(f"处理子序列操作: {subseq_col} = {value_str}")
-                                await self.process_cell(subseq_col, value_str)
+                    logger.info(f"检测到子序列开始，开始处理子序列逻辑")
                     
-                    # 子序列处理完成，跳转到子序列结束后
-                    col_idx = subsequence_end_idx + 1
-                    break
+                    # 处理子序列：从子序列开始列的下一列开始，到子序列结束列
+                    subseq_start_col_idx = subsequence_start_idx + 1
+                    subseq_end_col_idx = subsequence_end_idx if subsequence_end_idx is not None else len(columns)
+                    
+                    # 处理当前行的子序列部分
+                    encountered_end_marker = await self.process_subsequence_row(row, columns, subseq_start_col_idx, subseq_end_col_idx)
+                    
+                    # 子序列处理完成后，跳转到子序列结束列的下一列继续处理
+                    if subsequence_end_idx is not None:
+                        col_idx = subsequence_end_idx + 1
+                    else:
+                        col_idx = len(columns)
+                    continue
                 else:
                     # 处理子序列开始之前的列
                     value = row[col]
@@ -1307,7 +1960,43 @@ class LoginAutomation:
                         await self.process_cell(col, value_str)
                     col_idx += 1
             
+            # 移动到下一行
             i += 1
+    
+    async def process_subsequence_row(self, row: Dict, columns: List[str], start_col_idx: int, end_col_idx: int):
+        """
+        处理单行的子序列部分
+        
+        Args:
+            row: 行数据字典
+            columns: 列名列表
+            start_col_idx: 子序列开始列索引
+            end_col_idx: 子序列结束列索引
+            
+        Returns:
+            bool: 是否遇到子序列结束标记（已废弃，始终返回False）
+        """
+        logger.info(f"处理子序列行，从列 {start_col_idx} 到 {end_col_idx}")
+        
+        # 只处理子序列范围内的列（从start_col_idx到end_col_idx）
+        for col_idx in range(start_col_idx, end_col_idx):
+            col = columns[col_idx]
+            
+            # 跳过子序列开始列和处理进度列
+            if col in [SUBSEQUENCE_START_COL, "处理进度"]:
+                continue
+            
+            # 跳过子序列结束列本身
+            if col == SUBSEQUENCE_END_COL:
+                continue
+            
+            value = row[col]
+            if pd.notna(value) and value != "":
+                value_str = self.clean_value_string(value)
+                logger.info(f"处理子序列操作: {col} = {value_str}")
+                await self.process_cell(col, value_str)
+        
+        return False  # 不再返回子序列结束标记
     
     async def process_single_row(self, row: Dict, columns: List[str]):
         """
@@ -1318,7 +2007,7 @@ class LoginAutomation:
             columns: 列名列表
         """
         for col in columns:
-            if col == SEQUENCE_COL:  # 跳过序号列
+            if col == SEQUENCE_COL or col == "处理进度":  # 跳过序号列和处理进度列
                 continue
             
             value = row[col]
@@ -1426,8 +2115,8 @@ class LoginAutomation:
         while i < len(columns):
             col = columns[i]
             
-            # 跳过登录相关的列和序号列
-            if col in ["序号", "登录界面工号", "登录界面密码", "登录按钮"]:
+            # 跳过登录相关的列、序号列和处理进度列
+            if col in ["序号", "登录界面工号", "登录界面密码", "登录按钮", "处理进度"]:
                 i += 1
                 continue
             
@@ -1503,7 +2192,7 @@ class LoginAutomation:
             # 处理普通逻辑（假设只有一行数据）
             row = record_data.iloc[0]
             for col in record_data.columns:
-                if col == SEQUENCE_COL:
+                if col == SEQUENCE_COL or col == "处理进度":
                     continue
                 
                 value = row[col]
@@ -1527,17 +2216,16 @@ class LoginAutomation:
             
             # 从左到右处理每一列
             for col in record_data.columns:
-                if col in [SEQUENCE_COL, SUBSEQUENCE_START_COL, SUBSEQUENCE_END_COL]:
+                if col in [SEQUENCE_COL, SUBSEQUENCE_START_COL, SUBSEQUENCE_END_COL, "处理进度"]:
+                    # 检查是否遇到子序列结束标记，如果遇到则继续在同一行向右处理
+                    if col == SUBSEQUENCE_END_COL and pd.notna(row.get(col)) and row.get(col) != "":
+                        logger.info("检测到子序列结束标记，继续在同一行向右处理")
+                        continue
                     continue
                 
                 value = row[col]
                 if pd.notna(value) and value != "":
                     await self.process_cell(col, value)
-            
-            # 如果遇到子序列结束，等待一下再继续
-            if pd.notna(row.get(SUBSEQUENCE_END_COL, pd.NA)):
-                logger.info("检测到子序列结束，等待处理下一行")
-                await asyncio.sleep(0.3)
     
     async def run_automation(self, target_url: str = TARGET_URL):
         """
@@ -1624,5 +2312,4 @@ async def main():
     await automation.run_automation()
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
     asyncio.run(main()) 
