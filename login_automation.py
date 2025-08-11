@@ -817,7 +817,7 @@ class LoginAutomation:
                     if await radio_element.count() > 0:
                         await radio_element.click()
                         logger.info(f"✓ 在主页面成功点击radio按钮: {element_id}")
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(BUTTON_CLICK_WAIT)
                         return
                 except Exception as e:
                     logger.debug(f"主页面查找radio按钮失败: {e}")
@@ -831,7 +831,7 @@ class LoginAutomation:
                         if await radio_element.count() > 0:
                             await radio_element.click()
                             logger.info(f"✓ 在iframe {i} 中成功点击radio按钮: {element_id}")
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(BUTTON_CLICK_WAIT)
                             return
                     except Exception as e:
                         logger.debug(f"在iframe {i} 中查找radio按钮失败: {e}")
@@ -945,11 +945,112 @@ class LoginAutomation:
                     continue
         
         if button_found:
-            await asyncio.sleep(1)
+            await asyncio.sleep(BUTTON_CLICK_WAIT)
             return True
         else:
             logger.error(f"点击按钮最终失败: {btnname}")
             return False
+
+    async def click_first_row_reservation_button(self, retries: int = MAX_RETRIES):
+        """
+        点击表格中第一行的预约按钮
+        
+        Args:
+            retries: 重试次数
+        """
+        logger.info("尝试点击表格中第一行的预约按钮")
+        
+        for attempt in range(retries):
+            try:
+                # 获取所有iframe
+                frames = self.page.frames
+                logger.info(f"找到 {len(frames)} 个iframe")
+                
+                # 方法1: 在主页面查找表格和预约按钮
+                try:
+                    logger.info("在主页面查找表格...")
+                    await self.page.wait_for_selector("tbody >> tr[id^='2179_']", timeout=5000)
+                    logger.info("✓ 主页面表格加载完成")
+                    
+                    # 点击第一行中的预约按钮
+                    selector = "tbody >> tr[id^='2179_'] >> button[btnname='预约']"
+                    button = self.page.locator(selector).first
+                    
+                    if await button.count() > 0:
+                        await button.click()
+                        logger.info("✓ 在主页面成功点击第一行的预约按钮")
+                        await asyncio.sleep(BUTTON_CLICK_WAIT)
+                        return True
+                    else:
+                        logger.debug("主页面未找到预约按钮")
+                        
+                except Exception as e:
+                    logger.debug(f"主页面查找失败: {e}")
+                
+                # 方法2: 在iframe中查找表格和预约按钮
+                logger.info("在主页面未找到，尝试在iframe中查找...")
+                for i, frame in enumerate(frames):
+                    try:
+                        logger.info(f"在iframe {i} 中查找表格: {frame.url or 'unnamed frame'}")
+                        
+                        # 等待表格加载完成
+                        await frame.wait_for_selector("tbody >> tr[id^='2179_']", timeout=5000)
+                        logger.info(f"✓ iframe {i} 表格加载完成")
+                        
+                        # 点击第一行中的预约按钮
+                        selector = "tbody >> tr[id^='2179_'] >> button[btnname='预约']"
+                        button = frame.locator(selector).first
+                        
+                        if await button.count() > 0:
+                            await button.click()
+                            logger.info(f"✓ 在iframe {i} 中成功点击第一行的预约按钮")
+                            await asyncio.sleep(BUTTON_CLICK_WAIT)
+                            return True
+                        else:
+                            logger.debug(f"iframe {i} 中未找到预约按钮")
+                            
+                    except Exception as e:
+                        logger.debug(f"在iframe {i} 中查找失败: {e}")
+                        continue
+                
+                # 方法3: 更宽松的查找策略
+                logger.info("尝试更宽松的查找策略...")
+                for i, frame in enumerate(frames):
+                    try:
+                        # 查找任何包含"预约"的按钮
+                        button = frame.locator("button[btnname='预约']").first
+                        if await button.count() > 0:
+                            await button.click()
+                            logger.info(f"✓ 在iframe {i} 中找到并点击预约按钮")
+                            await asyncio.sleep(BUTTON_CLICK_WAIT)
+                            return True
+                    except Exception as e:
+                        logger.debug(f"在iframe {i} 中宽松查找失败: {e}")
+                        continue
+                
+                # 方法4: 在主页面尝试宽松查找
+                try:
+                    button = self.page.locator("button[btnname='预约']").first
+                    if await button.count() > 0:
+                        await button.click()
+                        logger.info("✓ 在主页面找到并点击预约按钮")
+                        await asyncio.sleep(BUTTON_CLICK_WAIT)
+                        return True
+                except Exception as e:
+                    logger.debug(f"主页面宽松查找失败: {e}")
+                
+                logger.warning(f"未找到预约按钮 (尝试 {attempt + 1}/{retries})")
+                
+            except Exception as e:
+                logger.warning(f"点击预约按钮失败 (尝试 {attempt + 1}/{retries}): {e}")
+                
+                if attempt < retries - 1:
+                    await asyncio.sleep(RETRY_DELAY)
+                else:
+                    logger.error("点击预约按钮最终失败")
+                    return False
+        
+        return False
     
     async def click_button(self, element_id: str, retries: int = MAX_RETRIES):
         """
@@ -998,8 +1099,7 @@ class LoginAutomation:
                 if await self.page.locator(onclick_selector).count() > 0:
                     await self.page.click(onclick_selector)
                     logger.info(f"成功点击导览框 (通过onclick): {value}")
-                    # 缩短等待时间
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(BUTTON_CLICK_WAIT)
                     return True
                 
                 # 方法2: 通过JavaScript直接调用
@@ -1007,8 +1107,7 @@ class LoginAutomation:
                 try:
                     await self.page.evaluate(f"navToPrj('{value}')")
                     logger.info(f"成功点击导览框 (通过JavaScript): {value}")
-                    # 缩短等待时间
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(BUTTON_CLICK_WAIT)
                     return True
                 except Exception as js_error:
                     logger.debug(f"JavaScript调用失败: {js_error}")
@@ -1020,8 +1119,7 @@ class LoginAutomation:
                 if await self.page.locator(text_selector).count() > 0:
                     await self.page.click(text_selector)
                     logger.info(f"成功点击导览框 (通过文本): {value}")
-                    # 缩短等待时间
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(BUTTON_CLICK_WAIT)
                     return True
                 
                 # 方法4: 通过title属性查找
@@ -1031,8 +1129,7 @@ class LoginAutomation:
                 if await self.page.locator(title_selector).count() > 0:
                     await self.page.click(title_selector)
                     logger.info(f"成功点击导览框 (通过title): {value}")
-                    # 缩短等待时间
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(BUTTON_CLICK_WAIT)
                     return True
                 
                 # 方法5: 通过class和onclick组合查找
@@ -1042,8 +1139,7 @@ class LoginAutomation:
                 if await self.page.locator(class_selector).count() > 0:
                     await self.page.click(class_selector)
                     logger.info(f"成功点击导览框 (通过class+onclick): {value}")
-                    # 缩短等待时间
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(BUTTON_CLICK_WAIT)
                     return True
                 
                 # 方法6: 通过第一个syslink元素查找
@@ -1053,8 +1149,7 @@ class LoginAutomation:
                 if await first_syslink.count() > 0:
                     await first_syslink.click()
                     logger.info(f"成功点击导览框 (通过第一个syslink): {value}")
-                    # 缩短等待时间
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(BUTTON_CLICK_WAIT)
                     return True
                 
                 logger.warning(f"所有方法都失败，尝试 {attempt + 1}/{retries}")
@@ -1095,6 +1190,14 @@ class LoginAutomation:
             else:
                 logger.warning(f"未找到标题 '{radio_title}' 对应的radio按钮ID映射，请检查标题-ID映射表中是否包含此标题")
             return
+        
+        # 处理第一行预约按钮操作（以$开头且标题为"预约按钮"）- 优先处理
+        if value_str.startswith(BUTTON_PREFIX) and title == "预约按钮":
+            button_value = value_str[len(BUTTON_PREFIX):]  # 去掉$前缀
+            if button_value == "预约":
+                logger.info("检测到第一行预约按钮操作")
+                await self.click_first_row_reservation_button()
+                return
         
         # 对于其他情况，先获取element_id
         element_id = self.get_object_id(title)
@@ -1166,6 +1269,7 @@ class LoginAutomation:
         # 处理按钮点击操作（以$开头）
         if value_str.startswith(BUTTON_PREFIX):
             button_value = value_str[len(BUTTON_PREFIX):]  # 去掉前缀符号
+            # 普通按钮点击
             await self.click_button(element_id)
             return
         
@@ -1747,7 +1851,7 @@ class LoginAutomation:
                     if await confirm_button.count() > 0:
                         await confirm_button.click()
                         logger.info(f"✓ 在主页面成功点击确定按钮 (使用选择器: {selector})")
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(BUTTON_CLICK_WAIT)
                         confirm_clicked = True
                         break
                 except Exception as e:
@@ -1764,7 +1868,7 @@ class LoginAutomation:
                             if await confirm_button.count() > 0:
                                 await confirm_button.click()
                                 logger.info(f"✓ 在iframe {i} 中成功点击确定按钮 (使用选择器: {selector})")
-                                await asyncio.sleep(1)
+                                await asyncio.sleep(BUTTON_CLICK_WAIT)
                                 confirm_clicked = True
                                 break
                         except Exception as e:
