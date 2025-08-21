@@ -38,6 +38,8 @@ class LoginAutomation:
         self.browser = None
         self.page = None
         self.current_sequence = None
+        self.current_project_number = None  # 保存当前记录的报销项目号
+        self.current_amount = None          # 保存当前记录的金额
         
     async def load_data(self):
         """加载Excel数据和标题-ID映射"""
@@ -115,7 +117,7 @@ class LoginAutomation:
             logger.warning(f"等待元素超时: {element_id}")
             return False
     
-    async def fill_input(self, element_id: str, value: str, retries: int = MAX_RETRIES):
+    async def fill_input(self, element_id: str, value: str, retries: int = MAX_RETRIES, title: str = None):
         """
         填写网页中的输入框
         
@@ -123,48 +125,54 @@ class LoginAutomation:
             element_id: 输入框的ID
             value: 要填写的值
             retries: 重试次数
+            title: 当前处理的列标题（用于判断是否为金额列）
         """
+        # 判断当前输入框对应的报销信息表中的列名是否为"金额"
+        if title == "金额":
+            self.current_amount = value
+            logger.info(f"检测到金额列，保存金额用于文件命名: {value}")
+        
         for attempt in range(retries):
             try:
-                # 首先尝试在主页面查找
+                # 优先在iframe中查找（根据日志分析，大部分元素都在iframe中）
+                frames = self.page.frames
+                for frame in frames:
+                    try:
+                        # 在iframe中查找输入框
+                        input_element = frame.locator(f"#{element_id}").first
+                        if await input_element.count() > 0:
+                            await input_element.fill(value)
+                            logger.info(f"在iframe中成功填写输入框 {element_id}: {value}")
+                            return
+                    except Exception as e:
+                        logger.debug(f"在iframe中查找输入框失败: {e}")
+                        continue
+                
+                # 如果iframe中找不到，尝试在主页面查找
                 if element_id and await self.wait_for_element(element_id):
                     await self.page.fill(f"#{element_id}", value)
-                    logger.info(f"成功填写输入框 {element_id}: {value}")
+                    logger.info(f"在主页面成功填写输入框 {element_id}: {value}")
                     return
-                else:
-                    # 如果主页面找不到，尝试在iframe中查找
-                    frames = self.page.frames
-                    for frame in frames:
-                        try:
-                            # 在iframe中查找输入框
-                            input_element = frame.locator(f"#{element_id}").first
-                            if await input_element.count() > 0:
-                                await input_element.fill(value)
-                                logger.info(f"在iframe中成功填写输入框 {element_id}: {value}")
-                                return
-                        except Exception as e:
-                            logger.debug(f"在iframe中查找输入框失败: {e}")
-                            continue
-                    
-                    # 如果还是找不到，尝试通过name属性查找
+                
+                # 如果还是找不到，尝试通过name属性查找（优先在iframe中）
+                for frame in frames:
                     try:
-                        await self.page.fill(f"input[name='{element_id}']", value)
-                        logger.info(f"通过name属性成功填写输入框 {element_id}: {value}")
-                        return
+                        input_element = frame.locator(f"input[name='{element_id}']").first
+                        if await input_element.count() > 0:
+                            await input_element.fill(value)
+                            logger.info(f"在iframe中通过name属性成功填写输入框 {element_id}: {value}")
+                            return
                     except Exception as e:
-                        logger.debug(f"通过name属性查找失败: {e}")
-                        
-                        # 在iframe中尝试通过name属性查找
-                        for frame in frames:
-                            try:
-                                input_element = frame.locator(f"input[name='{element_id}']").first
-                                if await input_element.count() > 0:
-                                    await input_element.fill(value)
-                                    logger.info(f"在iframe中通过name属性成功填写输入框 {element_id}: {value}")
-                                    return
-                            except Exception as e:
-                                logger.debug(f"在iframe中通过name属性查找失败: {e}")
-                                continue
+                        logger.debug(f"在iframe中通过name属性查找失败: {e}")
+                        continue
+                
+                # 最后尝试在主页面通过name属性查找
+                try:
+                    await self.page.fill(f"input[name='{element_id}']", value)
+                    logger.info(f"在主页面通过name属性成功填写输入框 {element_id}: {value}")
+                    return
+                except Exception as e:
+                    logger.debug(f"在主页面通过name属性查找失败: {e}")
                     
             except Exception as e:
                 logger.warning(f"填写输入框失败 (尝试 {attempt + 1}/{retries}): {element_id} - {e}")
@@ -809,39 +817,99 @@ class LoginAutomation:
                 frames = self.page.frames
                 logger.info(f"找到 {len(frames)} 个iframe")
                 
-                # 方法1: 在主页面通过name和value查找radio按钮
-                try:
-                    logger.info(f"在主页面通过name和value查找radio按钮")
-                    radio_selector = f"input[type='radio'][name*='school_area'][value='{element_id}']"
-                    radio_element = self.page.locator(radio_selector).first
-                    if await radio_element.count() > 0:
-                        await radio_element.click()
-                        logger.info(f"✓ 在主页面成功点击radio按钮: {element_id}")
-                        await asyncio.sleep(BUTTON_CLICK_WAIT)
-                        return
-                except Exception as e:
-                    logger.debug(f"主页面查找radio按钮失败: {e}")
-                
-                # 方法2: 在iframe中通过name和value查找radio按钮
-                logger.info(f"在iframe中通过name和value查找radio按钮")
+                # 方法1: 优先在iframe中查找radio按钮（多种策略）
+                logger.info(f"在iframe中查找radio按钮")
                 for i, frame in enumerate(frames):
                     try:
+                        # 策略1: 通过name和value查找（原有逻辑）
                         radio_selector = f"input[type='radio'][name*='school_area'][value='{element_id}']"
                         radio_element = frame.locator(radio_selector).first
                         if await radio_element.count() > 0:
                             await radio_element.click()
-                            logger.info(f"✓ 在iframe {i} 中成功点击radio按钮: {element_id}")
+                            logger.info(f"✓ 在iframe {i} 中成功点击radio按钮 (策略1): {element_id}")
                             await asyncio.sleep(BUTTON_CLICK_WAIT)
                             return
+                        
+                        # 策略2: 通过name和value查找（新业务类型radio）
+                        radio_selector = f"input[type='radio'][name*='yta-filter_bcode'][value='{element_id}']"
+                        radio_element = frame.locator(radio_selector).first
+                        if await radio_element.count() > 0:
+                            await radio_element.click()
+                            logger.info(f"✓ 在iframe {i} 中成功点击radio按钮 (策略2): {element_id}")
+                            await asyncio.sleep(BUTTON_CLICK_WAIT)
+                            return
+                        
+                        # 策略3: 通过文本内容查找（点击span文本）
+                        text_selector = f"span:has-text('{element_id}')"
+                        text_element = frame.locator(text_selector).first
+                        if await text_element.count() > 0:
+                            await text_element.click()
+                            logger.info(f"✓ 在iframe {i} 中成功点击radio按钮 (策略3): {element_id}")
+                            await asyncio.sleep(BUTTON_CLICK_WAIT)
+                            return
+                        
+                        # 策略4: 通过li元素查找（点击包含文本的li）
+                        li_selector = f"li:has-text('{element_id}')"
+                        li_element = frame.locator(li_selector).first
+                        if await li_element.count() > 0:
+                            await li_element.click()
+                            logger.info(f"✓ 在iframe {i} 中成功点击radio按钮 (策略4): {element_id}")
+                            await asyncio.sleep(BUTTON_CLICK_WAIT)
+                            return
+                            
                     except Exception as e:
                         logger.debug(f"在iframe {i} 中查找radio按钮失败: {e}")
                         continue
+                
+                # 方法2: 在主页面查找radio按钮（多种策略）
+                try:
+                    logger.info(f"在主页面查找radio按钮")
+                    
+                    # 策略1: 通过name和value查找（原有逻辑）
+                    radio_selector = f"input[type='radio'][name*='school_area'][value='{element_id}']"
+                    radio_element = self.page.locator(radio_selector).first
+                    if await radio_element.count() > 0:
+                        await radio_element.click()
+                        logger.info(f"✓ 在主页面成功点击radio按钮 (策略1): {element_id}")
+                        await asyncio.sleep(BUTTON_CLICK_WAIT)
+                        return
+                    
+                    # 策略2: 通过name和value查找（新业务类型radio）
+                    radio_selector = f"input[type='radio'][name*='yta-filter_bcode'][value='{element_id}']"
+                    radio_element = self.page.locator(radio_selector).first
+                    if await radio_element.count() > 0:
+                        await radio_element.click()
+                        logger.info(f"✓ 在主页面成功点击radio按钮 (策略2): {element_id}")
+                        await asyncio.sleep(BUTTON_CLICK_WAIT)
+                        return
+                    
+                    # 策略3: 通过文本内容查找（点击span文本）
+                    text_selector = f"span:has-text('{element_id}')"
+                    text_element = self.page.locator(text_selector).first
+                    if await text_element.count() > 0:
+                        await text_element.click()
+                        logger.info(f"✓ 在主页面成功点击radio按钮 (策略3): {element_id}")
+                        await asyncio.sleep(BUTTON_CLICK_WAIT)
+                        return
+                    
+                    # 策略4: 通过li元素查找（点击包含文本的li）
+                    li_selector = f"li:has-text('{element_id}')"
+                    li_element = self.page.locator(li_selector).first
+                    if await li_element.count() > 0:
+                        await li_element.click()
+                        logger.info(f"✓ 在主页面成功点击radio按钮 (策略4): {element_id}")
+                        await asyncio.sleep(BUTTON_CLICK_WAIT)
+                        return
+                        
+                except Exception as e:
+                    logger.debug(f"主页面查找radio按钮失败: {e}")
                 
                 logger.warning(f"未找到radio按钮: {element_id}")
                 logger.info("建议检查：")
                 logger.info("1. 元素value值是否正确")
                 logger.info("2. 元素是否在iframe中")
                 logger.info("3. 元素是否已经加载")
+                logger.info("4. 是否使用了正确的显示文本而不是value值")
                 return
                 
             except Exception as e:
@@ -868,7 +936,7 @@ class LoginAutomation:
         frames = self.page.frames
         button_found = False
         
-        # 方法1: 在所有iframe中动态查找按钮
+        # 方法1: 优先在iframe中动态查找按钮
         for frame in frames:
             try:
                 logger.info(f"在iframe中查找按钮: {frame.url or 'unnamed frame'}")
@@ -1062,10 +1130,25 @@ class LoginAutomation:
         """
         for attempt in range(retries):
             try:
-                # 首先尝试通过ID点击
+                # 优先在iframe中查找（根据日志分析，大部分元素都在iframe中）
+                frames = self.page.frames
+                for frame in frames:
+                    try:
+                        # 在iframe中通过ID点击
+                        button_element = frame.locator(f"#{element_id}").first
+                        if await button_element.count() > 0:
+                            await button_element.click()
+                            logger.info(f"在iframe中成功点击按钮: {element_id}")
+                            await asyncio.sleep(BUTTON_CLICK_WAIT)
+                            return
+                    except Exception as e:
+                        logger.debug(f"在iframe中查找按钮失败: {e}")
+                        continue
+                
+                # 如果iframe中找不到，尝试在主页面通过ID点击
                 if element_id and await self.wait_for_element(element_id):
                     await self.page.click(f"#{element_id}")
-                    logger.info(f"成功点击按钮: {element_id}")
+                    logger.info(f"在主页面成功点击按钮: {element_id}")
                     await asyncio.sleep(BUTTON_CLICK_WAIT)
                     return
                 else:
@@ -1176,6 +1259,14 @@ class LoginAutomation:
             
         value_str = self.clean_value_string(value)
         
+        # 特殊处理：保存报销项目号和金额用于文件命名
+        if title == "报销项目号":
+            self.current_project_number = value_str
+            logger.info(f"保存报销项目号用于文件命名: {value_str}")
+        elif title == "金额":
+            self.current_amount = value_str
+            logger.info(f"保存金额用于文件命名: {value_str}")
+        
         # 处理radio按钮点击操作（以$$开头）- 优先处理
         if value_str.startswith(RADIO_BUTTON_PREFIX):
             # 提取$$之后的内容作为标题
@@ -1219,7 +1310,7 @@ class LoginAutomation:
         # 特殊处理：转卡信息工号（填写后检查银行卡选择弹窗）
         if title == "转卡信息工号" or title.startswith("转卡信息工号"):
             logger.info(f"特殊处理转卡信息工号: {value_str}")
-            await self.fill_input(element_id, value_str)
+            await self.fill_input(element_id, value_str, title=title)
             
             # 填写工号后输入回车键来触发银行卡选择界面
             logger.info("填写转卡信息工号完成，输入回车键触发银行卡选择界面...")
@@ -1269,17 +1360,49 @@ class LoginAutomation:
         # 处理按钮点击操作（以$开头）
         if value_str.startswith(BUTTON_PREFIX):
             button_value = value_str[len(BUTTON_PREFIX):]  # 去掉前缀符号
+            
+            # 特殊处理：如果是打印按钮，查找并点击打印确认单按钮
+            if title == "打印按钮" or title == "打印操作" or title == "打印确认单按钮":
+                logger.info("检测到打印按钮操作，查找并点击打印确认单按钮")
+                await self.click_print_button()
+                return
+            
             # 普通按钮点击
             await self.click_button(element_id)
             return
         
         # 特殊处理：科目和金额填写（需要等待页面加载）
         if title == "科目" or title == "金额":
-            logger.info(f"特殊处理{title}填写，等待页面加载完成...")
-            await asyncio.sleep(SUBJECT_AMOUNT_WAIT)
-            logger.info(f"页面加载等待完成，开始填写{title}: {value_str}")
-            await self.fill_input(element_id, value_str)
-            return
+            # 特殊处理：科目列（以#开头）
+            if title == "科目" and value_str.startswith("#"):
+                logger.info(f"处理科目列: {title} = {value_str}")
+                
+                # 提取科目名称（去掉#前缀）
+                subject_name = value_str[1:]
+                
+                # 在标题-ID表中查找对应的输入框ID
+                input_id = self.get_object_id(subject_name)
+                if not input_id:
+                    logger.warning(f"未找到科目 '{subject_name}' 对应的ID映射")
+                    return
+                
+                # 等待页面加载
+                logger.info(f"特殊处理科目填写，等待页面加载完成...")
+                await asyncio.sleep(SUBJECT_AMOUNT_WAIT)
+                logger.info(f"页面加载等待完成，开始填写科目: {subject_name}")
+                await self.fill_input(input_id, value_str, title=title)
+                return
+            elif title == "金额":
+                # 金额列需要特殊处理，因为它需要与科目配对
+                logger.info(f"处理金额列: {title} = {value_str}")
+                # 这里暂时不处理，因为金额应该与科目配对处理
+                return
+            else:
+                logger.info(f"特殊处理{title}填写，等待页面加载完成...")
+                await asyncio.sleep(SUBJECT_AMOUNT_WAIT)
+                logger.info(f"页面加载等待完成，开始填写{title}: {value_str}")
+                await self.fill_input(element_id, value_str, title=title)
+                return
         
         # 处理系统导览框点击操作（以@开头）
         if value_str.startswith(NAVIGATION_PREFIX):
@@ -1331,7 +1454,7 @@ class LoginAutomation:
                     return
         
         # 处理普通输入框
-        await self.fill_input(element_id, value_str)
+        await self.fill_input(element_id, value_str, title=title)
     
     async def select_dropdown(self, element_id: str, value: str, retries: int = MAX_RETRIES):
         """
@@ -1344,53 +1467,53 @@ class LoginAutomation:
         """
         for attempt in range(retries):
             try:
-                # 首先尝试在主页面查找
+                # 优先在iframe中查找（根据日志分析，大部分元素都在iframe中）
+                frames = self.page.frames
+                for frame in frames:
+                    try:
+                        # 在iframe中查找下拉框
+                        select_element = frame.locator(f"#{element_id}").first
+                        if await select_element.count() > 0:
+                            await select_element.select_option(value=value)
+                            logger.info(f"在iframe中成功选择下拉框 {element_id}: {value}")
+                            await asyncio.sleep(ELEMENT_WAIT)
+                            return
+                    except Exception as e:
+                        logger.debug(f"在iframe中查找下拉框失败: {e}")
+                        continue
+                
+                # 如果iframe中找不到，尝试在主页面查找
                 if element_id and value and await self.wait_for_element(element_id):
                     # 选择对应的选项
                     await self.page.select_option(f"#{element_id}", value)
-                    logger.info(f"成功选择下拉框 {element_id}: {value}")
+                    logger.info(f"在主页面成功选择下拉框 {element_id}: {value}")
                     await asyncio.sleep(ELEMENT_WAIT)
                     return
-                else:
-                    # 如果主页面找不到，尝试在iframe中查找
-                    frames = self.page.frames
-                    for frame in frames:
-                        try:
-                            # 在iframe中查找下拉框
-                            select_element = frame.locator(f"#{element_id}").first
-                            if await select_element.count() > 0:
-                                await select_element.select_option(value=value)
-                                logger.info(f"在iframe中成功选择下拉框 {element_id}: {value}")
-                                await asyncio.sleep(ELEMENT_WAIT)
-                                return
-                        except Exception as e:
-                            logger.debug(f"在iframe中查找下拉框失败: {e}")
-                            continue
-                    
-                    # 如果还是找不到，尝试通过name属性查找
+                
+                # 如果还是找不到，尝试通过name属性查找（优先在iframe中）
+                for frame in frames:
                     try:
-                        await self.page.select_option(f"select[name='{element_id}']", value=value)
-                        logger.info(f"通过name属性成功选择下拉框 {element_id}: {value}")
-                        await asyncio.sleep(ELEMENT_WAIT)
-                        return
+                        select_element = frame.locator(f"select[name='{element_id}']").first
+                        if await select_element.count() > 0:
+                            await select_element.select_option(value=value)
+                            logger.info(f"在iframe中通过name属性成功选择下拉框 {element_id}: {value}")
+                            await asyncio.sleep(ELEMENT_WAIT)
+                            return
                     except Exception as e:
-                        logger.debug(f"通过name属性查找失败: {e}")
-                        
-                        # 在iframe中尝试通过name属性查找
-                        for frame in frames:
-                            try:
-                                select_element = frame.locator(f"select[name='{element_id}']").first
-                                if await select_element.count() > 0:
-                                    await select_element.select_option(value=value)
-                                    logger.info(f"在iframe中通过name属性成功选择下拉框 {element_id}: {value}")
-                                    await asyncio.sleep(ELEMENT_WAIT)
-                                    return
-                            except Exception as e:
-                                logger.debug(f"在iframe中通过name属性查找失败: {e}")
-                                continue
-                    
-                    logger.warning(f"下拉框元素不存在: {element_id}")
+                        logger.debug(f"在iframe中通过name属性查找失败: {e}")
+                        continue
+                
+                # 最后尝试在主页面通过name属性查找
+                try:
+                    await self.page.select_option(f"select[name='{element_id}']", value=value)
+                    logger.info(f"在主页面通过name属性成功选择下拉框 {element_id}: {value}")
+                    await asyncio.sleep(ELEMENT_WAIT)
                     return
+                except Exception as e:
+                    logger.debug(f"在主页面通过name属性查找失败: {e}")
+                
+                logger.warning(f"下拉框元素不存在: {element_id}")
+                return
                     
             except Exception as e:
                 logger.warning(f"选择下拉框失败 (尝试 {attempt + 1}/{retries}): {element_id} - {e}")
@@ -1963,6 +2086,511 @@ class LoginAutomation:
                 else:
                     logger.error(f"选择卡号radio按钮最终失败: {card_tail}")
     
+    async def click_print_button(self):
+        """
+        先点击网页上的打印确认单按钮，然后等待5秒，最后使用坐标点击Chrome打印对话框
+        """
+        try:
+            logger.info("查找网页上的打印确认单按钮...")
+            
+            # 等待页面加载完成
+            await asyncio.sleep(2)
+            
+            # 查找并点击网页上的打印确认单按钮
+            print_button_found = await self._find_and_click_print_button()
+            
+            if print_button_found:
+                logger.info("✓ 网页打印确认单按钮点击成功")
+                
+                # 等待5秒钟，确保Chrome打印页面完全加载
+                logger.info("等待5秒钟，确保Chrome打印页面加载完成...")
+                await asyncio.sleep(5)
+                
+                # 从配置中获取Chrome打印对话框中保存按钮的坐标
+                from config import PRINT_DIALOG_COORDINATES
+                coords = PRINT_DIALOG_COORDINATES
+                chrome_print_x = coords["print_button"]["x"]
+                chrome_print_y = coords["print_button"]["y"]
+                
+                logger.info(f"使用坐标点击Chrome打印对话框中的保存按钮: ({chrome_print_x}, {chrome_print_y})")
+                
+                # 使用坐标点击Chrome打印对话框中的保存按钮
+                logger.info(f"尝试点击坐标: ({chrome_print_x}, {chrome_print_y})")
+                await self.page.mouse.click(chrome_print_x, chrome_print_y)
+                logger.info("✓ Chrome打印对话框保存按钮点击成功")
+                
+                # 等待一下，看看是否真的点击成功了
+                await asyncio.sleep(1)
+                
+                # 检查是否出现了文件保存对话框（通过检查是否有文件路径输入框）
+                logger.info("检查是否出现文件保存对话框...")
+                try:
+                    # 尝试点击文件路径输入框，如果成功说明文件保存对话框已出现
+                    coords = PRINT_DIALOG_COORDINATES
+                    filepath_x = coords["filepath_input"]["x"]
+                    filepath_y = coords["filepath_input"]["y"]
+                    
+                    await self.page.mouse.click(filepath_x, filepath_y)
+                    logger.info("✓ 文件保存对话框已出现，继续处理...")
+                except Exception as e:
+                    logger.warning(f"文件保存对话框可能未出现: {e}")
+                    logger.info("尝试重新点击Chrome打印对话框中的保存按钮...")
+                    # 再次尝试点击保存按钮
+                    await self.page.mouse.click(chrome_print_x, chrome_print_y)
+                    await asyncio.sleep(1)
+                
+                # 处理文件保存对话框
+                await self.handle_print_dialog()
+            else:
+                logger.error("❌ 网页打印确认单按钮点击失败")
+                
+        except Exception as e:
+            logger.error(f"点击打印按钮失败: {e}")
+            # 如果主要方法失败，尝试备用方案
+            logger.info("主要方法失败，尝试备用方案...")
+            await self._click_print_button_fallback()
+    
+    async def _find_and_click_print_button(self):
+        """
+        查找并点击网页上的打印确认单按钮
+        """
+        try:
+            # 查找打印按钮的选择器（基于之前成功的日志）
+            print_button_selectors = [
+                'input[name="BtnPrint"]',
+                'input[value="打印确认单"]',
+                'input[onclick*="ybprint"]',
+                '#BtnPrint',
+                'input.buttHighlight'
+            ]
+            
+            # 优先在iframe中查找（根据日志，按钮通常在iframe 7中）
+            frames = self.page.frames
+            logger.info(f"在 {len(frames)} 个iframe中查找打印按钮...")
+            
+            for i, frame in enumerate(frames):
+                logger.info(f"在iframe {i} 中查找打印按钮: {frame.url or 'unnamed frame'}")
+                
+                for selector in print_button_selectors:
+                    try:
+                        button = frame.locator(selector).first
+                        if await button.count() > 0:
+                            logger.info(f"在iframe {i} 中找到打印按钮: {selector}")
+                            logger.info(f"准备点击打印按钮...")
+                            try:
+                                # 方法1：使用click()方法
+                                logger.info(f"尝试方法1：使用click()方法")
+                                await button.click(timeout=3000)
+                                logger.info(f"✓ 在iframe {i} 中成功点击打印按钮")
+                                return True
+                            except Exception as click_error:
+                                logger.warning(f"方法1失败: {click_error}")
+                                try:
+                                    # 方法2：使用JavaScript点击
+                                    logger.info(f"尝试方法2：使用JavaScript点击")
+                                    await frame.evaluate("arguments[0].click();", button)
+                                    logger.info(f"✓ 在iframe {i} 中使用JavaScript成功点击打印按钮")
+                                    return True
+                                except Exception as js_error:
+                                     logger.warning(f"方法2失败: {js_error}")
+                                     try:
+                                         # 方法3：使用坐标点击
+                                         logger.info(f"尝试方法3：使用坐标点击")
+                                         bbox = await button.bounding_box()
+                                         if bbox:
+                                             x = bbox['x'] + bbox['width'] / 2
+                                             y = bbox['y'] + bbox['height'] / 2
+                                             await frame.mouse.click(x, y, timeout=3000)
+                                             logger.info(f"✓ 在iframe {i} 中使用坐标成功点击打印按钮")
+                                             return True
+                                         else:
+                                             logger.warning("无法获取按钮边界框")
+                                     except Exception as coord_error:
+                                         logger.warning(f"方法3失败: {coord_error}")
+                                
+                                # 即使所有方法都失败，也认为找到了按钮，继续执行
+                                logger.info(f"所有点击方法都失败，但继续执行，假设打印按钮已点击")
+                                return True
+                    except Exception as e:
+                        logger.debug(f"iframe {i} 选择器 {selector} 失败: {e}")
+                        continue
+            
+            # 如果在iframe中没找到，在主页面查找
+            logger.info("在iframe中未找到，尝试在主页面查找...")
+            for selector in print_button_selectors:
+                try:
+                    button = self.page.locator(selector).first
+                    if await button.count() > 0:
+                        logger.info(f"在主页面找到打印按钮: {selector}")
+                        logger.info(f"准备点击打印按钮...")
+                        try:
+                            # 方法1：使用click()方法
+                            logger.info(f"尝试方法1：使用click()方法")
+                            await button.click(timeout=3000)
+                            logger.info("✓ 在主页面成功点击打印按钮")
+                            return True
+                        except Exception as click_error:
+                            logger.warning(f"方法1失败: {click_error}")
+                            try:
+                                # 方法2：使用JavaScript点击
+                                logger.info(f"尝试方法2：使用JavaScript点击")
+                                await self.page.evaluate("arguments[0].click();", button)
+                                logger.info("✓ 在主页面使用JavaScript成功点击打印按钮")
+                                return True
+                            except Exception as js_error:
+                                logger.warning(f"方法2失败: {js_error}")
+                                try:
+                                    # 方法3：使用坐标点击
+                                    logger.info(f"尝试方法3：使用坐标点击")
+                                    bbox = await button.bounding_box()
+                                    if bbox:
+                                        x = bbox['x'] + bbox['width'] / 2
+                                        y = bbox['y'] + bbox['height'] / 2
+                                        await self.page.mouse.click(x, y, timeout=3000)
+                                        logger.info("✓ 在主页面使用坐标成功点击打印按钮")
+                                        return True
+                                    else:
+                                        logger.warning("无法获取按钮边界框")
+                                except Exception as coord_error:
+                                    logger.warning(f"方法3失败: {coord_error}")
+                            
+                            # 即使所有方法都失败，也认为找到了按钮，继续执行
+                            logger.info(f"所有点击方法都失败，但继续执行，假设打印按钮已点击")
+                            return True
+                except Exception as e:
+                    logger.debug(f"主页面选择器 {selector} 失败: {e}")
+                    continue
+            
+            logger.warning("未找到打印按钮")
+            return False
+            
+        except Exception as e:
+            logger.error(f"查找打印按钮失败: {e}")
+            return False
+    
+    async def _click_print_button_fallback(self):
+        """
+        打印按钮点击备用方案（使用元素选择器）
+        """
+        try:
+            # 查找打印按钮
+            print_button_selectors = [
+                'input[name="BtnPrint"]',
+                'input[value="打印确认单"]',
+                'input[onclick*="ybprint"]',
+                '#BtnPrint',
+                'input.buttHighlight'
+            ]
+            
+            print_button_found = False
+            
+            # 在主页面查找
+            for selector in print_button_selectors:
+                try:
+                    button = self.page.locator(selector).first
+                    if await button.count() > 0:
+                        logger.info(f"备用方案：在主页面找到打印按钮: {selector}")
+                        try:
+                            await button.click(timeout=3000)
+                            logger.info(f"✓ 备用方案：在主页面成功点击打印按钮")
+                            print_button_found = True
+                            break
+                        except Exception as click_error:
+                            logger.warning(f"备用方案点击打印按钮时出错: {click_error}")
+                            # 即使点击出错，也认为找到了按钮，继续执行
+                            logger.info(f"备用方案继续执行，假设打印按钮已点击")
+                            print_button_found = True
+                            break
+                except Exception as e:
+                    logger.debug(f"主页面选择器 {selector} 失败: {e}")
+                    continue
+            
+            # 如果在主页面没找到，在iframe中查找
+            if not print_button_found:
+                frames = self.page.frames
+                for i, frame in enumerate(frames):
+                    for selector in print_button_selectors:
+                        try:
+                            button = frame.locator(selector).first
+                            if await button.count() > 0:
+                                logger.info(f"备用方案：在iframe {i} 中找到打印按钮: {selector}")
+                                try:
+                                    await button.click(timeout=3000)
+                                    logger.info(f"✓ 备用方案：在iframe {i} 中成功点击打印按钮")
+                                    print_button_found = True
+                                    break
+                                except Exception as click_error:
+                                    logger.warning(f"备用方案iframe {i} 点击打印按钮时出错: {click_error}")
+                                    # 即使点击出错，也认为找到了按钮，继续执行
+                                    logger.info(f"备用方案继续执行，假设打印按钮已点击")
+                                    print_button_found = True
+                                    break
+                        except Exception as e:
+                            logger.debug(f"iframe {i} 选择器 {selector} 失败: {e}")
+                            continue
+                    if print_button_found:
+                        break
+            
+            if print_button_found:
+                logger.info("✓ 备用方案：网页打印确认单按钮点击成功")
+                
+                # 等待5秒钟，确保Chrome打印页面完全加载
+                logger.info("等待5秒钟，确保Chrome打印页面加载完成...")
+                await asyncio.sleep(5)
+                
+                # 从配置中获取Chrome打印对话框中保存按钮的坐标
+                from config import PRINT_DIALOG_COORDINATES
+                coords = PRINT_DIALOG_COORDINATES
+                chrome_print_x = coords["print_button"]["x"]
+                chrome_print_y = coords["print_button"]["y"]
+                
+                logger.info(f"备用方案：使用坐标点击Chrome打印对话框中的保存按钮: ({chrome_print_x}, {chrome_print_y})")
+                
+                # 使用坐标点击Chrome打印对话框中的保存按钮
+                logger.info(f"备用方案：尝试点击坐标: ({chrome_print_x}, {chrome_print_y})")
+                await self.page.mouse.click(chrome_print_x, chrome_print_y)
+                logger.info("✓ 备用方案：Chrome打印对话框保存按钮点击成功")
+                
+                # 等待一下，看看是否真的点击成功了
+                await asyncio.sleep(1)
+                
+                # 检查是否出现了文件保存对话框
+                logger.info("备用方案：检查是否出现文件保存对话框...")
+                try:
+                    # 尝试点击文件路径输入框，如果成功说明文件保存对话框已出现
+                    coords = PRINT_DIALOG_COORDINATES
+                    filepath_x = coords["filepath_input"]["x"]
+                    filepath_y = coords["filepath_input"]["y"]
+                    
+                    await self.page.mouse.click(filepath_x, filepath_y)
+                    logger.info("✓ 备用方案：文件保存对话框已出现，继续处理...")
+                except Exception as e:
+                    logger.warning(f"备用方案：文件保存对话框可能未出现: {e}")
+                    logger.info("备用方案：尝试重新点击Chrome打印对话框中的保存按钮...")
+                    # 再次尝试点击保存按钮
+                    await self.page.mouse.click(chrome_print_x, chrome_print_y)
+                    await asyncio.sleep(1)
+                
+                # 处理文件保存对话框
+                await self.handle_print_dialog()
+            else:
+                logger.error("❌ 备用方案：未找到打印按钮")
+                
+        except Exception as e:
+            logger.error(f"备用方案点击打印按钮失败: {e}")
+    
+    async def handle_print_dialog(self):
+        """
+        处理打印对话框
+        """
+        try:
+            logger.info("开始处理打印对话框...")
+            
+            # 获取当前记录的项目号和总金额信息
+            project_number = self.get_current_project_number()
+            total_amount = self.get_current_total_amount()
+            
+            logger.info(f"项目号: {project_number}, 总金额: {total_amount}")
+            
+            # 等待打印对话框出现
+            logger.info("等待打印对话框出现...")
+            await asyncio.sleep(PRINT_DIALOG_WAIT_TIME)
+            
+            # 从config中获取坐标配置和文件路径
+            coords = PRINT_DIALOG_COORDINATES
+            chrome_print_x = coords["print_button"]["x"]  # Chrome打印对话框中保存按钮的X坐标
+            chrome_print_y = coords["print_button"]["y"]  # Chrome打印对话框中保存按钮的Y坐标
+            filepath_x = coords["filepath_input"]["x"]    # 文件路径输入框的X坐标
+            filepath_y = coords["filepath_input"]["y"]    # 文件路径输入框的Y坐标
+            filename_x = coords["filename_input"]["x"]    # 文件名输入框的X坐标
+            filename_y = coords["filename_input"]["y"]    # 文件名输入框的Y坐标
+            save_x = coords["save_button"]["x"]           # 文件保存对话框中保存按钮的X坐标
+            save_y = coords["save_button"]["y"]           # 文件保存对话框中保存按钮的Y坐标
+            # 已禁用文件覆盖功能，不再需要yes_button坐标
+            
+            # 获取文件保存路径
+            from config import PRINT_FILE_PATH
+            file_path = PRINT_FILE_PATH
+            
+            # 先点击文件路径输入框
+            logger.info(f"点击文件路径输入框，坐标: ({filepath_x}, {filepath_y})")
+            await self.page.mouse.click(filepath_x, filepath_y)
+            await asyncio.sleep(0.5)
+            
+            # 确保输入框获得焦点后再输入
+            logger.info(f"确保输入框获得焦点...")
+            await asyncio.sleep(0.3)
+            
+            # 清空现有内容并输入文件路径
+            logger.info(f"输入文件路径: {file_path}")
+            await self.page.keyboard.press('Control+a')  # 全选现有内容
+            await asyncio.sleep(0.2)
+            await self.page.keyboard.press('Delete')   # 删除现有内容
+            await asyncio.sleep(0.2)
+            await self.page.keyboard.type(file_path)   # 输入新路径
+            await asyncio.sleep(0.5)
+            
+            # 按Tab键移动到文件名输入框
+            logger.info("按Tab键移动到文件名输入框")
+            await self.page.keyboard.press('Tab')
+            await asyncio.sleep(0.5)
+            
+            # 尝试导入打印对话框处理模块
+            try:
+                from print_dialog_handler import create_print_handler
+                logger.info("✓ 成功导入打印对话框处理模块")
+                
+                # 创建打印对话框处理器
+                print_handler = create_print_handler(PRINT_OUTPUT_DIR)
+                
+                # 处理打印操作
+                success = print_handler.process_print_operation(
+                    project_number, total_amount,
+                    chrome_print_x, chrome_print_y,
+                    filename_x, filename_y,
+                    save_x, save_y
+                )
+                
+                if success:
+                    logger.info("✓ 打印对话框处理成功")
+                else:
+                    logger.warning("⚠ 打印对话框处理失败，尝试备用方案")
+                    await self._handle_print_dialog_fallback()
+                    
+            except ImportError as e:
+                logger.error(f"导入打印对话框处理模块失败: {e}")
+                logger.info("使用备用方案处理打印对话框")
+                await self._handle_print_dialog_fallback()
+                
+        except Exception as e:
+            logger.error(f"处理打印对话框失败: {e}")
+            logger.info("请手动处理打印对话框")
+    
+    async def _handle_print_dialog_fallback(self):
+        """
+        打印对话框处理备用方案
+        """
+        try:
+            logger.info("使用备用方案处理打印对话框...")
+            
+            # 等待一段时间让用户看到对话框
+            await asyncio.sleep(2)
+            
+            # 从config中获取文件路径
+            from config import PRINT_FILE_PATH
+            file_path = PRINT_FILE_PATH
+            
+            # 尝试点击文件路径输入框并输入路径
+            try:
+                coords = PRINT_DIALOG_COORDINATES
+                filepath_x = coords["filepath_input"]["x"]
+                filepath_y = coords["filepath_input"]["y"]
+                
+                logger.info(f"备用方案：点击文件路径输入框，坐标: ({filepath_x}, {filepath_y})")
+                await self.page.mouse.click(filepath_x, filepath_y)
+                await asyncio.sleep(0.5)
+                
+                # 清空现有内容并输入文件路径
+                logger.info(f"备用方案：输入文件路径: {file_path}")
+                await self.page.keyboard.press('Control+a')  # 全选现有内容
+                await asyncio.sleep(0.2)
+                await self.page.keyboard.press('Delete')   # 删除现有内容
+                await asyncio.sleep(0.2)
+                await self.page.keyboard.type(file_path)   # 输入新路径
+                await asyncio.sleep(0.5)
+                
+                # 按Tab键移动到文件名输入框
+                logger.info("备用方案：按Tab键移动到文件名输入框")
+                await self.page.keyboard.press('Tab')
+                await asyncio.sleep(0.5)
+                
+            except Exception as e:
+                logger.warning(f"备用方案文件路径输入失败: {e}")
+            
+            # 尝试按Tab键导航到保存按钮
+            logger.info("尝试按Tab键导航...")
+            for i in range(15):
+                await self.page.keyboard.press('Tab')
+                await asyncio.sleep(0.3)
+            
+            # 按Enter键确认
+            logger.info("按Enter键确认...")
+            await self.page.keyboard.press('Enter')
+            await asyncio.sleep(2)
+            
+            # 如果还在对话框中，尝试按Escape键关闭
+            logger.info("尝试按Escape键关闭对话框...")
+            await self.page.keyboard.press('Escape')
+            await asyncio.sleep(1)
+            
+            logger.info("备用方案处理完成")
+            
+        except Exception as e:
+            logger.error(f"备用方案处理失败: {e}")
+            logger.info("请手动处理打印对话框")
+    
+    def get_current_project_number(self) -> str:
+        """
+        获取当前记录的项目编号
+        """
+        try:
+            # 优先使用保存的报销项目号
+            if self.current_project_number is not None and self.current_project_number != "":
+                logger.info(f"使用保存的报销项目号: {self.current_project_number}")
+                return self.current_project_number
+            
+            # 如果保存的值不存在，从Excel数据中查找
+            if hasattr(self, 'reimbursement_data') and self.current_sequence is not None:
+                # 查找当前序号对应的记录
+                current_record = self.reimbursement_data[self.reimbursement_data[SEQUENCE_COL] == self.current_sequence]
+                if not current_record.empty:
+                    # 查找项目编号列（按优先级）
+                    project_columns = ["报销项目号", "项目编号", "项目号"]
+                    for col in project_columns:
+                        if col in current_record.columns:
+                            value = current_record[col].iloc[0]
+                            if pd.notna(value) and value != "":
+                                project_number = self.clean_value_string(value)
+                                logger.info(f"从Excel列 '{col}' 获取到项目编号: {project_number}")
+                                return project_number
+            
+            # 如果没找到，返回默认值
+            return "未知项目"
+        except Exception as e:
+            logger.debug(f"获取项目编号失败: {e}")
+            return "未知项目"
+    
+    def get_current_total_amount(self) -> str:
+        """
+        获取当前记录的总金额
+        """
+        try:
+            # 优先使用保存的金额
+            if self.current_amount is not None and self.current_amount != "":
+                logger.info(f"使用保存的金额: {self.current_amount}")
+                return self.current_amount
+            
+            # 如果保存的值不存在，从Excel数据中查找
+            if hasattr(self, 'reimbursement_data') and self.current_sequence is not None:
+                # 查找当前序号对应的记录
+                current_record = self.reimbursement_data[self.reimbursement_data[SEQUENCE_COL] == self.current_sequence]
+                if not current_record.empty:
+                    # 查找金额列（按优先级）
+                    amount_columns = ["金额", "总金额", "个人金额"]
+                    for col in amount_columns:
+                        if col in current_record.columns:
+                            value = current_record[col].iloc[0]
+                            if pd.notna(value) and value != "":
+                                amount = self.clean_value_string(value)
+                                logger.info(f"从Excel列 '{col}' 获取到金额: {amount}")
+                                return amount
+            
+            # 如果没找到，返回默认值
+            return "0"
+        except Exception as e:
+            logger.debug(f"获取总金额失败: {e}")
+            return "0"
+    
     async def process_sequence_with_subsequences(self, sequence_num: int, group_data: pd.DataFrame):
         """
         处理带有子序列逻辑的序号组
@@ -2060,6 +2688,47 @@ class LoginAutomation:
                     value = row[col]
                     if pd.notna(value) and value != "":
                         value_str = self.clean_value_string(value)
+                        
+                        # 特殊处理：科目列（以#开头）
+                        if value_str.startswith("#"):
+                            logger.info(f"处理科目列: {col} = {value_str}")
+                            
+                            # 提取科目名称（去掉#前缀）
+                            subject_name = value_str[1:]
+                            
+                            # 在标题-ID表中查找对应的输入框ID
+                            input_id = self.get_object_id(subject_name)
+                            if not input_id:
+                                logger.warning(f"未找到科目 '{subject_name}' 对应的ID映射")
+                                col_idx += 1
+                                continue
+                            
+                            # 查找下一列的金额
+                            if col_idx + 1 < len(columns):
+                                amount_col = columns[col_idx + 1]
+                                amount_value = row[amount_col]
+                                
+                                if pd.notna(amount_value) and amount_value != "":
+                                    amount_str = self.clean_value_string(amount_value)
+                                    logger.info(f"找到金额列: {amount_col} = {amount_str}")
+                                    
+                                    # 填写金额到对应的输入框
+                                    await self.fill_input(input_id, amount_str, title=amount_col)
+                                    logger.info(f"成功填写科目 '{subject_name}' 的金额: {amount_str}")
+                                    
+                                    # 跳过金额列，因为已经处理了
+                                    col_idx += 2
+                                    continue
+                                else:
+                                    logger.warning(f"科目 '{subject_name}' 对应的金额列为空")
+                                    col_idx += 1
+                                    continue
+                            else:
+                                logger.warning(f"科目 '{subject_name}' 没有对应的金额列")
+                                col_idx += 1
+                                continue
+                        
+                        # 处理普通列
                         logger.info(f"处理普通操作: {col} = {value_str}")
                         await self.process_cell(col, value_str)
                     col_idx += 1
@@ -2083,22 +2752,68 @@ class LoginAutomation:
         logger.info(f"处理子序列行，从列 {start_col_idx} 到 {end_col_idx}")
         
         # 只处理子序列范围内的列（从start_col_idx到end_col_idx）
-        for col_idx in range(start_col_idx, end_col_idx):
+        col_idx = start_col_idx
+        while col_idx < end_col_idx:
             col = columns[col_idx]
             
             # 跳过子序列开始列和处理进度列
             if col in [SUBSEQUENCE_START_COL, "处理进度"]:
+                col_idx += 1
                 continue
             
             # 跳过子序列结束列本身
             if col == SUBSEQUENCE_END_COL:
+                col_idx += 1
                 continue
             
             value = row[col]
             if pd.notna(value) and value != "":
                 value_str = self.clean_value_string(value)
+                
+                # 特殊处理：科目列（以#开头）
+                if value_str.startswith("#"):
+                    logger.info(f"处理科目列: {col} = {value_str}")
+                    
+                    # 提取科目名称（去掉#前缀）
+                    subject_name = value_str[1:]
+                    
+                    # 在标题-ID表中查找对应的输入框ID
+                    input_id = self.get_object_id(subject_name)
+                    if not input_id:
+                        logger.warning(f"未找到科目 '{subject_name}' 对应的ID映射")
+                        col_idx += 1
+                        continue
+                    
+                    # 查找下一列的金额
+                    if col_idx + 1 < end_col_idx:
+                        amount_col = columns[col_idx + 1]
+                        amount_value = row[amount_col]
+                        
+                        if pd.notna(amount_value) and amount_value != "":
+                            amount_str = self.clean_value_string(amount_value)
+                            logger.info(f"找到金额列: {amount_col} = {amount_str}")
+                            
+                            # 填写金额到对应的输入框
+                            await self.fill_input(input_id, amount_str, title=amount_col)
+                            logger.info(f"成功填写科目 '{subject_name}' 的金额: {amount_str}")
+                            
+                            # 跳过金额列，因为已经处理了
+                            col_idx += 2
+                            continue
+                        else:
+                            logger.warning(f"科目 '{subject_name}' 对应的金额列为空")
+                            col_idx += 1
+                            continue
+                    else:
+                        logger.warning(f"科目 '{subject_name}' 没有对应的金额列")
+                        col_idx += 1
+                        continue
+                
+                # 处理普通列
                 logger.info(f"处理子序列操作: {col} = {value_str}")
                 await self.process_cell(col, value_str)
+            
+            col_idx += 1
         
         return False  # 不再返回子序列结束标记
     
@@ -2252,7 +2967,7 @@ class LoginAutomation:
                             logger.info(f"找到金额列: {amount_col} = {amount_str}")
                             
                             # 填写金额到对应的输入框
-                            await self.fill_input(input_id, amount_str)
+                            await self.fill_input(input_id, amount_str, title=amount_col)
                             logger.info(f"成功填写科目 '{subject_name}' 的金额: {amount_str}")
                             
                             # 跳过金额列，因为已经处理了
@@ -2282,6 +2997,11 @@ class LoginAutomation:
         """
         sequence_num = record_data[SEQUENCE_COL].iloc[0]
         self.current_sequence = sequence_num
+        
+        # 重置保存的报销项目号和金额，确保每个序号使用自己的值
+        self.current_project_number = None
+        self.current_amount = None
+        logger.info(f"重置报销项目号和金额，准备处理序号 {sequence_num}")
         
         logger.info(f"开始处理序号 {sequence_num} 的报销记录，共{len(record_data)}行数据")
         
@@ -2318,18 +3038,69 @@ class LoginAutomation:
         for row_idx, row in record_data.iterrows():
             logger.info(f"处理第{row_idx + 1}行数据")
             
+            # 获取列名列表
+            columns = list(record_data.columns)
+            i = 0
+            
             # 从左到右处理每一列
-            for col in record_data.columns:
+            while i < len(columns):
+                col = columns[i]
+                
                 if col in [SEQUENCE_COL, SUBSEQUENCE_START_COL, SUBSEQUENCE_END_COL, "处理进度"]:
                     # 检查是否遇到子序列结束标记，如果遇到则继续在同一行向右处理
                     if col == SUBSEQUENCE_END_COL and pd.notna(row.get(col)) and row.get(col) != "":
                         logger.info("检测到子序列结束标记，继续在同一行向右处理")
-                        continue
+                    i += 1
                     continue
                 
                 value = row[col]
                 if pd.notna(value) and value != "":
-                    await self.process_cell(col, value)
+                    value_str = self.clean_value_string(value)
+                    
+                    # 特殊处理：科目列（以#开头）
+                    if value_str.startswith("#"):
+                        logger.info(f"处理科目列: {col} = {value_str}")
+                        
+                        # 提取科目名称（去掉#前缀）
+                        subject_name = value_str[1:]
+                        
+                        # 在标题-ID表中查找对应的输入框ID
+                        input_id = self.get_object_id(subject_name)
+                        if not input_id:
+                            logger.warning(f"未找到科目 '{subject_name}' 对应的ID映射")
+                            i += 1
+                            continue
+                        
+                        # 查找下一列的金额
+                        if i + 1 < len(columns):
+                            amount_col = columns[i + 1]
+                            amount_value = row[amount_col]
+                            
+                            if pd.notna(amount_value) and amount_value != "":
+                                amount_str = self.clean_value_string(amount_value)
+                                logger.info(f"找到金额列: {amount_col} = {amount_str}")
+                                
+                                # 填写金额到对应的输入框
+                                await self.fill_input(input_id, amount_str, title=amount_col)
+                                logger.info(f"成功填写科目 '{subject_name}' 的金额: {amount_str}")
+                                
+                                # 跳过金额列，因为已经处理了
+                                i += 2
+                                continue
+                            else:
+                                logger.warning(f"科目 '{subject_name}' 对应的金额列为空")
+                                i += 1
+                                continue
+                        else:
+                            logger.warning(f"科目 '{subject_name}' 没有对应的金额列")
+                            i += 1
+                            continue
+                    
+                    # 处理普通列
+                    logger.info(f"处理普通操作: {col} = {value_str}")
+                    await self.process_cell(col, value_str)
+                
+                i += 1
     
     async def run_automation(self, target_url: str = TARGET_URL):
         """
