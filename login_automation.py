@@ -1267,6 +1267,26 @@ class LoginAutomation:
             self.current_amount = value_str
             logger.info(f"保存金额用于文件命名: {value_str}")
         
+        # 处理等待操作（标题为"等待"或"等待.1"等）
+        if title.startswith("等待"):
+            try:
+                # 支持两种格式：$数字 或 直接数字
+                if value_str.startswith(BUTTON_PREFIX):
+                    # 格式：$数字
+                    wait_seconds_str = value_str[len(BUTTON_PREFIX):]  # 去掉$前缀
+                else:
+                    # 格式：直接数字
+                    wait_seconds_str = value_str
+                
+                wait_seconds = float(wait_seconds_str)
+                logger.info(f"检测到等待操作，等待 {wait_seconds} 秒")
+                await asyncio.sleep(wait_seconds)
+                logger.info(f"等待 {wait_seconds} 秒完成")
+                return
+            except ValueError:
+                logger.warning(f"等待操作格式错误，无法解析秒数: {value_str}")
+                return
+        
         # 处理radio按钮点击操作（以$$开头）- 优先处理
         if value_str.startswith(RADIO_BUTTON_PREFIX):
             # 提取$$之后的内容作为标题
@@ -2668,14 +2688,22 @@ class LoginAutomation:
                 
                 # 如果到达子序列开始列，开始处理子序列
                 if col_idx == subsequence_start_idx:
-                    logger.info(f"检测到子序列开始，开始处理子序列逻辑")
-                    
-                    # 处理子序列：从子序列开始列的下一列开始，到子序列结束列
-                    subseq_start_col_idx = subsequence_start_idx + 1
-                    subseq_end_col_idx = subsequence_end_idx if subsequence_end_idx is not None else len(columns)
-                    
-                    # 处理当前行的子序列部分
-                    encountered_end_marker = await self.process_subsequence_row(row, columns, subseq_start_col_idx, subseq_end_col_idx)
+                    subsequence_value = row[col]
+                    if pd.notna(subsequence_value) and subsequence_value != "":
+                        subsequence_value_str = self.clean_value_string(subsequence_value)
+                        
+                        # 检查是否为第二种子序列（数字"1"标记）
+                        if subsequence_value_str == TRAVELER_SUBSEQUENCE_MARKER:
+                            logger.info(f"检测到第二种子序列（出差人信息），开始处理出差人信息填写")
+                            await self.process_traveler_subsequence(group_data, i)
+                        else:
+                            logger.info(f"检测到第一种子序列，开始处理子序列逻辑")
+                            # 处理子序列：从子序列开始列的下一列开始，到子序列结束列
+                            subseq_start_col_idx = subsequence_start_idx + 1
+                            subseq_end_col_idx = subsequence_end_idx if subsequence_end_idx is not None else len(columns)
+                            
+                            # 处理当前行的子序列部分
+                            encountered_end_marker = await self.process_subsequence_row(row, columns, subseq_start_col_idx, subseq_end_col_idx)
                     
                     # 子序列处理完成后，跳转到子序列结束列的下一列继续处理
                     if subsequence_end_idx is not None:
@@ -2982,9 +3010,21 @@ class LoginAutomation:
                         i += 1
                         continue
                 
-                # 处理普通列
-                logger.info(f"处理登录后的操作: {col} = {value_str}")
-                await self.process_cell(col, value_str)
+                # 特殊处理：子序列开始列
+                if col == SUBSEQUENCE_START_COL:
+                    if value_str == TRAVELER_SUBSEQUENCE_MARKER:
+                        logger.info(f"检测到第二种子序列（出差人信息），开始处理出差人信息填写")
+                        await self.process_traveler_subsequence(record_data, 0)  # 从第1行开始
+                        # 跳过当前行的其余列，因为已经处理了
+                        i = len(columns)  # 跳到行末
+                        break  # 跳出while循环
+                    else:
+                        logger.info(f"检测到第一种子序列（值: {value_str}），继续处理")
+                        await self.process_cell(col, value_str)
+                else:
+                    # 处理普通列
+                    logger.info(f"处理登录后的操作: {col} = {value_str}")
+                    await self.process_cell(col, value_str)
             
             i += 1
     
@@ -3025,6 +3065,86 @@ class LoginAutomation:
         
         logger.info(f"序号 {sequence_num} 的报销记录处理完成")
     
+    async def process_traveler_subsequence(self, group_data: pd.DataFrame, start_row_idx: int):
+        """
+        处理第二种子序列逻辑：填写出差人信息到网页表格
+        采用类似第一种子序列的方式，自动为字段名添加后缀并查询标题-ID映射
+        
+        Args:
+            group_data: 同一序号下的所有数据行
+            start_row_idx: 子序列开始的行索引
+        """
+        logger.info(f"开始处理出差人信息子序列，从第 {start_row_idx + 1} 行开始")
+        
+        # 从开始行开始，逐行处理子序列
+        traveler_index = 0  # 出差人索引，用于生成后缀
+        
+        for row_idx in range(start_row_idx, len(group_data)):
+            row = group_data.iloc[row_idx]
+            
+            # 检查是否为子序列结束（但先处理当前行的信息）
+            is_end_marker = (SUBSEQUENCE_END_COL in group_data.columns and 
+                           pd.notna(row[SUBSEQUENCE_END_COL]) and 
+                           self.clean_value_string(row[SUBSEQUENCE_END_COL]) == TRAVELER_SUBSEQUENCE_MARKER)
+            
+            if is_end_marker:
+                logger.info(f"检测到子序列结束标记，在第 {row_idx + 1} 行")
+                # 继续处理当前行，然后结束
+                should_break = True
+            else:
+                should_break = False
+            
+            # 检查当前行是否有有效的出差人信息
+            has_traveler_info = False
+            for field in TRAVELER_FIELDS.keys():
+                if field in group_data.columns and pd.notna(row[field]) and row[field] != "":
+                    has_traveler_info = True
+                    break
+            
+            if not has_traveler_info:
+                logger.info(f"第 {row_idx + 1} 行没有有效的出差人信息，跳过")
+                continue
+            
+            # 限制最多6个出差人
+            if traveler_index >= 6:
+                logger.warning(f"出差人数量超过6个，跳过第 {traveler_index + 1} 个")
+                break
+            
+            logger.info(f"处理第 {traveler_index + 1} 个出差人信息（第 {row_idx + 1} 行）")
+            
+            # 逐列处理当前行的出差人信息
+            for field in TRAVELER_FIELDS.keys():
+                if field in group_data.columns and pd.notna(row[field]) and row[field] != "":
+                    value = self.clean_value_string(row[field])
+                    
+                    # 为字段名添加后缀
+                    field_with_suffix = f"{field}-{traveler_index}"
+                    logger.info(f"处理字段: {field} -> {field_with_suffix} = {value}")
+                    
+                    # 在标题-ID映射表中查找对应的输入框ID
+                    input_id = self.get_object_id(field_with_suffix)
+                    if not input_id:
+                        logger.warning(f"未找到字段 '{field_with_suffix}' 对应的ID映射")
+                        continue
+                    
+                    # 根据字段类型选择填写方式
+                    if field == "人员类型":
+                        # 人员类型使用下拉选择
+                        await self.select_dropdown(input_id, value)
+                        logger.info(f"选择{field_with_suffix}: {value}")
+                    else:
+                        # 其他字段使用输入框填写
+                        await self.fill_input(input_id, value, title=field_with_suffix)
+                        logger.info(f"填写{field_with_suffix}: {value}")
+            
+            traveler_index += 1
+            
+            # 如果检测到结束标记，处理完当前行后退出
+            if should_break:
+                break
+        
+        logger.info(f"出差人信息填写完成，共处理了 {traveler_index} 个出差人")
+    
     async def process_subsequence_logic(self, record_data: pd.DataFrame):
         """
         处理子序列逻辑
@@ -3046,7 +3166,25 @@ class LoginAutomation:
             while i < len(columns):
                 col = columns[i]
                 
-                if col in [SEQUENCE_COL, SUBSEQUENCE_START_COL, SUBSEQUENCE_END_COL, "处理进度"]:
+                # 处理子序列开始列
+                if col == SUBSEQUENCE_START_COL:
+                    subsequence_value = row[col]
+                    if pd.notna(subsequence_value) and subsequence_value != "":
+                        subsequence_value_str = self.clean_value_string(subsequence_value)
+                        
+                        # 检查是否为第二种子序列（数字"1"标记）
+                        if subsequence_value_str == TRAVELER_SUBSEQUENCE_MARKER:
+                            logger.info(f"检测到第二种子序列（出差人信息），开始处理出差人信息填写")
+                            await self.process_traveler_subsequence(record_data, row_idx)
+                            # 跳过当前行的其余列，因为已经处理了
+                            i = len(columns)  # 跳到行末
+                            break  # 跳出while循环，继续处理下一行
+                        else:
+                            logger.info(f"检测到第一种子序列（值: {subsequence_value_str}），继续处理")
+                    i += 1
+                    continue
+                
+                if col in [SEQUENCE_COL, SUBSEQUENCE_END_COL, "处理进度"]:
                     # 检查是否遇到子序列结束标记，如果遇到则继续在同一行向右处理
                     if col == SUBSEQUENCE_END_COL and pd.notna(row.get(col)) and row.get(col) != "":
                         logger.info("检测到子序列结束标记，继续在同一行向右处理")

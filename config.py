@@ -5,7 +5,7 @@ import os
 EXCEL_FILE = "报销信息.xlsx"
 MAPPING_FILE = "标题-ID.xlsx"
 DROPDOWN_MAPPING_FILE = "下拉框映射.xlsx"  # 新增：下拉框映射文件
-SHEET_NAME = "BaoXiao_sheet"
+SHEET_NAME = "ChaiLv_sheet"
 
 # 网页配置
 TARGET_URL = "https://cwcx.uestc.edu.cn/WFManager/home.jsp"  # 电子科技大学财务系统
@@ -73,6 +73,18 @@ CARD_NUMBER_PREFIX = "*"  # 卡号尾号选择前缀
 # 子序列处理配置
 SUBSEQUENCE_START_COL = "子序列开始"  # 子序列开始列名
 SUBSEQUENCE_END_COL = "子序列结束"  # 子序列结束列名
+
+# 第二种子序列处理配置（出差人信息填写）
+TRAVELER_SUBSEQUENCE_MARKER = "1"  # 第二种子序列的标记值
+TRAVELER_FIELDS = {
+    "姓名": "姓名",
+    "人员类型": "人员类型(级别)", 
+    "单位": "单位",
+    "职称": "职称"
+}
+
+# ChaiLv sheet相关配置
+CHAILV_SHEET_NAME = "ChaiLv_sheet"  # 差旅信息sheet名称
 
 # 日志配置
 LOG_LEVEL = "INFO"
