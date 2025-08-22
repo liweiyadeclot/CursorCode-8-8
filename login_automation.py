@@ -101,7 +101,7 @@ class LoginAutomation:
     
     async def wait_for_element(self, element_id: str, timeout: int = 3) -> bool:
         """
-        等待元素出现
+        等待元素出现（支持在iframe中查找）
         
         Args:
             element_id: 元素ID
@@ -111,7 +111,21 @@ class LoginAutomation:
             是否成功找到元素
         """
         try:
+            # 优先在iframe中查找
+            frames = self.page.frames
+            for frame in frames:
+                try:
+                    element = frame.locator(f"#{element_id}").first
+                    if await element.count() > 0:
+                        logger.info(f"在iframe中找到元素: {element_id}")
+                        return True
+                except Exception as e:
+                    logger.debug(f"在iframe中查找元素失败: {e}")
+                    continue
+            
+            # 如果iframe中找不到，尝试在主页面查找
             await self.page.wait_for_selector(f"#{element_id}", timeout=timeout * 1000)
+            logger.info(f"在主页面中找到元素: {element_id}")
             return True
         except TimeoutError:
             logger.warning(f"等待元素超时: {element_id}")
@@ -553,7 +567,7 @@ class LoginAutomation:
                 
                 # 首先在主页面查找
                 try:
-                    await self.page.wait_for_selector("#ui-datepicker-div", state="visible", timeout=3000)
+                    await self.page.wait_for_selector("#ui-datepicker-div", state="visible", timeout=1000)
                     logger.info("✓ 在主页面找到jQuery UI日历控件")
                     calendar_found = True
                     calendar_frame = self.page
@@ -567,7 +581,7 @@ class LoginAutomation:
                     
                     for i, frame in enumerate(frames):
                         try:
-                            await frame.wait_for_selector("#ui-datepicker-div", state="visible", timeout=3000)
+                            await frame.wait_for_selector("#ui-datepicker-div", state="visible", timeout=1000)
                             logger.info(f"✓ 在iframe {i} 中找到jQuery UI日历控件")
                             calendar_found = True
                             calendar_frame = frame
@@ -589,7 +603,7 @@ class LoginAutomation:
                     # 在主页面尝试其他选择器
                     for selector in calendar_selectors:
                         try:
-                            await self.page.wait_for_selector(selector, state="visible", timeout=2000)
+                            await self.page.wait_for_selector(selector, state="visible", timeout=500)
                             logger.info(f"✓ 在主页面找到日历控件: {selector}")
                             calendar_found = True
                             calendar_frame = self.page
@@ -602,7 +616,7 @@ class LoginAutomation:
                         for i, frame in enumerate(frames):
                             for selector in calendar_selectors:
                                 try:
-                                    await frame.wait_for_selector(selector, state="visible", timeout=2000)
+                                    await frame.wait_for_selector(selector, state="visible", timeout=500)
                                     logger.info(f"✓ 在iframe {i} 中找到日历控件: {selector}")
                                     calendar_found = True
                                     calendar_frame = frame
@@ -619,14 +633,14 @@ class LoginAutomation:
                     
                     # 再次检查所有frame
                     try:
-                        await self.page.wait_for_selector("#ui-datepicker-div", state="visible", timeout=5000)
+                        await self.page.wait_for_selector("#ui-datepicker-div", state="visible", timeout=1000)
                         logger.info("✓ 等待后在主页面找到jQuery UI日历控件")
                         calendar_found = True
                         calendar_frame = self.page
                     except Exception:
                         for i, frame in enumerate(frames):
                             try:
-                                await frame.wait_for_selector("#ui-datepicker-div", state="visible", timeout=3000)
+                                await frame.wait_for_selector("#ui-datepicker-div", state="visible", timeout=1000)
                                 logger.info(f"✓ 等待后在iframe {i} 中找到jQuery UI日历控件")
                                 calendar_found = True
                                 calendar_frame = frame
@@ -1436,10 +1450,58 @@ class LoginAutomation:
             await self.select_card_by_number(card_tail)
             return
         
-        # 处理下拉框选择
-        if title in DROPDOWN_FIELDS:
+        # 处理下拉框选择（支持列名映射和ID模式识别）
+        # 创建列名到配置名的映射
+        dropdown_title_mapping = {
+            "省份": "省份地区",  # Excel列名 -> 配置名
+            "人员类型": "人员类型",  # 保持原样
+            "安排状态": "安排状态",  # 保持原样
+            "交通费": "交通费"  # 保持原样
+        }
+        
+        # 获取实际的配置名
+        config_title = dropdown_title_mapping.get(title, title)
+        
+        # 检查是否为下拉框字段（通过配置名或ID模式）
+        is_dropdown = False
+        dropdown_config = None
+        
+        # 方法1: 通过配置名检查
+        if config_title in DROPDOWN_FIELDS:
+            is_dropdown = True
+            dropdown_config = DROPDOWN_FIELDS[config_title]
+        
+        # 方法2: 通过ID模式检查（如果element_id存在）
+        elif element_id:
+            # 检查是否为已知的下拉框ID模式
+            dropdown_id_patterns = [
+                "formWF_YB6_3492_yc-chr_sf",  # 省份下拉框模式
+                "formWF_YB6_3492_yc-chr_hsf",  # hsf下拉框模式
+                "formWF_YB6_3492_yc-chr_jtf",  # jtf下拉框模式
+                "formWF_YB6_3492_yc-chr_zc",   # 人员类型下拉框模式
+                "formWF_YB6_3492_yc-chr_azzt", # 安排状态下拉框模式
+            ]
+            
+            for pattern in dropdown_id_patterns:
+                if pattern in element_id:
+                    is_dropdown = True
+                    # 根据ID模式确定下拉框类型（使用精确匹配）
+                    if "formWF_YB6_3492_yc-chr_sf" in element_id:
+                        dropdown_config = DROPDOWN_FIELDS.get("省份地区", {})
+                    elif "formWF_YB6_3492_yc-chr_hsf" in element_id:
+                        # 这里需要根据实际情况确定hsf对应的下拉框类型
+                        dropdown_config = DROPDOWN_FIELDS.get("安排状态", {})
+                    elif "formWF_YB6_3492_yc-chr_jtf" in element_id:
+                        dropdown_config = DROPDOWN_FIELDS.get("交通费", {})
+                    elif "formWF_YB6_3492_yc-chr_zc" in element_id:
+                        dropdown_config = DROPDOWN_FIELDS.get("人员类型", {})
+                    elif "formWF_YB6_3492_yc-chr_azzt" in element_id:
+                        dropdown_config = DROPDOWN_FIELDS.get("安排状态", {})
+                    break
+        
+        if is_dropdown and dropdown_config:
             # 获取下拉框的映射关系
-            dropdown_mapping = DROPDOWN_FIELDS[title]
+            dropdown_mapping = dropdown_config
             # 查找对应的值
             if value_str in dropdown_mapping:
                 mapped_value = dropdown_mapping[value_str]
@@ -1454,7 +1516,9 @@ class LoginAutomation:
         # 处理日期输入框（检查element_id是否包含日期相关的标识）
         if (element_id and ("date" in element_id.lower() or "startdate" in element_id.lower() or "enddate" in element_id.lower() or 
                            element_id.endswith("_startdate") or element_id.endswith("_enddate") or
-                           "temp-startdate" in element_id or "temp-enddate" in element_id)):
+                           "temp-startdate" in element_id or "temp-enddate" in element_id or
+                           element_id == "formWF_YB6_3492_yc-chr_start1_0" or element_id == "formWF_YB6_3492_yc-chr_end1_0" or
+                           "start" in element_id or "end" in element_id)):
             logger.info(f"检测到日期输入框: {element_id} = {value_str}")
             
             # 优先尝试新的jQuery UI日历控件方法
@@ -1503,12 +1567,14 @@ class LoginAutomation:
                         continue
                 
                 # 如果iframe中找不到，尝试在主页面查找
-                if element_id and value and await self.wait_for_element(element_id):
-                    # 选择对应的选项
+                try:
+                    await self.page.wait_for_selector(f"#{element_id}", timeout=3000)
                     await self.page.select_option(f"#{element_id}", value)
                     logger.info(f"在主页面成功选择下拉框 {element_id}: {value}")
                     await asyncio.sleep(ELEMENT_WAIT)
                     return
+                except Exception as e:
+                    logger.debug(f"在主页面查找下拉框失败: {e}")
                 
                 # 如果还是找不到，尝试通过name属性查找（优先在iframe中）
                 for frame in frames:
@@ -2633,7 +2699,23 @@ class LoginAutomation:
                 logger.info(f"登录完成，继续处理序号 {sequence_num} 的剩余 {len(group_data) - 1} 行数据")
                 # 处理剩余的行（跳过第一行，因为已经处理了登录）
                 remaining_data = group_data.iloc[1:]
-                await self.process_subsequences(remaining_data)
+                # 检查是否包含第二种子序列，如果包含则跳过重复处理
+                has_traveler_subsequence = False
+                for _, row in remaining_data.iterrows():
+                    for col in remaining_data.columns:
+                        if col.startswith(SUBSEQUENCE_START_COL):
+                            if pd.notna(row[col]) and self.clean_value_string(row[col]) == TRAVELER_SUBSEQUENCE_MARKER:
+                                has_traveler_subsequence = True
+                                break
+                    if has_traveler_subsequence:
+                        break
+                
+                if has_traveler_subsequence:
+                    logger.info("检测到第二种子序列已在登录流程中处理，跳过重复处理，但继续处理后续操作字段")
+                    # 即使跳过了重复处理，也要处理后续的操作字段（如"下一步按钮4"）
+                    await self.process_remaining_operations(remaining_data)
+                else:
+                    await self.process_subsequences(remaining_data)
         else:
             # 处理子序列逻辑
             logger.info("未检测到登录信息，直接处理子序列逻辑")
@@ -2660,19 +2742,31 @@ class LoginAutomation:
             current_sequence = row.get(SEQUENCE_COL, None)
             logger.info(f"处理第 {i+1} 行数据，序号: {current_sequence}")
             
-            # 查找子序列开始和结束列的位置
+            # 查找子序列开始和结束列的位置（支持自动重命名）
             subsequence_start_idx = None
             subsequence_end_idx = None
             
-            try:
-                subsequence_start_idx = columns.index(SUBSEQUENCE_START_COL)
-            except ValueError:
+            # 查找子序列开始列（支持自动重命名如"子序列开始.1"）
+            subsequence_start_cols = [col for col in columns if col.startswith(SUBSEQUENCE_START_COL)]
+            if subsequence_start_cols:
+                # 使用第一个找到的子序列开始列
+                subsequence_start_idx = columns.index(subsequence_start_cols[0])
+                logger.info(f"找到子序列开始列: {subsequence_start_cols[0]} (索引: {subsequence_start_idx})")
+                if len(subsequence_start_cols) > 1:
+                    logger.info(f"注意：还找到其他子序列开始列: {subsequence_start_cols[1:]}")
+            else:
                 logger.debug("未找到子序列开始列，按普通方式处理")
                 subsequence_start_idx = None
             
-            try:
-                subsequence_end_idx = columns.index(SUBSEQUENCE_END_COL)
-            except ValueError:
+            # 查找子序列结束列（支持自动重命名如"子序列结束.1"）
+            subsequence_end_cols = [col for col in columns if col.startswith(SUBSEQUENCE_END_COL)]
+            if subsequence_end_cols:
+                # 使用第一个找到的子序列结束列
+                subsequence_end_idx = columns.index(subsequence_end_cols[0])
+                logger.info(f"找到子序列结束列: {subsequence_end_cols[0]} (索引: {subsequence_end_idx})")
+                if len(subsequence_end_cols) > 1:
+                    logger.info(f"注意：还找到其他子序列结束列: {subsequence_end_cols[1:]}")
+            else:
                 logger.debug("未找到子序列结束列")
                 subsequence_end_idx = None
             
@@ -2696,6 +2790,12 @@ class LoginAutomation:
                         if subsequence_value_str == TRAVELER_SUBSEQUENCE_MARKER:
                             logger.info(f"检测到第二种子序列（出差人信息），开始处理出差人信息填写")
                             await self.process_traveler_subsequence(group_data, i)
+                            # 第二种子序列处理完成后，继续处理子序列结束后的其他列
+                            if subsequence_end_idx is not None:
+                                col_idx = subsequence_end_idx + 1
+                            else:
+                                col_idx = len(columns)
+                            continue
                         else:
                             logger.info(f"检测到第一种子序列，开始处理子序列逻辑")
                             # 处理子序列：从子序列开始列的下一列开始，到子序列结束列
@@ -3045,9 +3145,10 @@ class LoginAutomation:
         
         logger.info(f"开始处理序号 {sequence_num} 的报销记录，共{len(record_data)}行数据")
         
-        # 检查是否有子序列列
-        has_subsequence = (SUBSEQUENCE_START_COL in record_data.columns and 
-                          SUBSEQUENCE_END_COL in record_data.columns)
+        # 检查是否有子序列列（支持自动重命名）
+        has_subsequence_start = any(col.startswith(SUBSEQUENCE_START_COL) for col in record_data.columns)
+        has_subsequence_end = any(col.startswith(SUBSEQUENCE_END_COL) for col in record_data.columns)
+        has_subsequence = has_subsequence_start and has_subsequence_end
         
         if has_subsequence:
             # 处理子序列逻辑
@@ -3077,19 +3178,29 @@ class LoginAutomation:
         logger.info(f"开始处理出差人信息子序列，从第 {start_row_idx + 1} 行开始")
         
         # 从开始行开始，逐行处理子序列
+        # 重置traveler_index，确保从0开始
         traveler_index = 0  # 出差人索引，用于生成后缀
+        logger.info(f"重置traveler_index为0，开始处理第二种子序列")
+        
+        # 强制重置traveler_index，确保从0开始
+        self.traveler_index = 0
         
         for row_idx in range(start_row_idx, len(group_data)):
             row = group_data.iloc[row_idx]
             
-            # 检查是否为子序列结束（但先处理当前行的信息）
-            is_end_marker = (SUBSEQUENCE_END_COL in group_data.columns and 
-                           pd.notna(row[SUBSEQUENCE_END_COL]) and 
-                           self.clean_value_string(row[SUBSEQUENCE_END_COL]) == TRAVELER_SUBSEQUENCE_MARKER)
+            # 检查是否为子序列结束（但先处理当前行的信息，支持自动重命名）
+            is_end_marker = False
+            for end_col in group_data.columns:
+                if end_col.startswith(SUBSEQUENCE_END_COL):
+                    if pd.notna(row[end_col]) and self.clean_value_string(row[end_col]) == TRAVELER_SUBSEQUENCE_MARKER:
+                        is_end_marker = True
+                        logger.info(f"检测到子序列结束标记，在第 {row_idx + 1} 行的列 {end_col}")
+                        break
             
             if is_end_marker:
                 logger.info(f"检测到子序列结束标记，在第 {row_idx + 1} 行")
-                # 继续处理当前行，然后结束
+                # 如果是子序列结束标记所在行，先处理当前行的出差人信息，然后结束
+                logger.info(f"处理子序列结束标记所在行的出差人信息")
                 should_break = True
             else:
                 should_break = False
@@ -3113,8 +3224,11 @@ class LoginAutomation:
             logger.info(f"处理第 {traveler_index + 1} 个出差人信息（第 {row_idx + 1} 行）")
             
             # 逐列处理当前行的出差人信息
-            for field in TRAVELER_FIELDS.keys():
-                if field in group_data.columns and pd.notna(row[field]) and row[field] != "":
+            # 调整字段处理顺序：先填写姓名，再填写工号，避免工号触发的事件清空姓名
+            field_order = ["姓名", "人员类型", "单位", "职称", "工号"]
+            
+            for field in field_order:
+                if field in TRAVELER_FIELDS.keys() and field in group_data.columns and pd.notna(row[field]) and row[field] != "":
                     value = self.clean_value_string(row[field])
                     
                     # 为字段名添加后缀
@@ -3132,10 +3246,98 @@ class LoginAutomation:
                         # 人员类型使用下拉选择
                         await self.select_dropdown(input_id, value)
                         logger.info(f"选择{field_with_suffix}: {value}")
+                    elif field == "工号":
+                        # 工号字段特殊处理：填写后等待一下，让JavaScript事件完成
+                        await self.fill_input(input_id, value, title=field_with_suffix)
+                        logger.info(f"填写{field_with_suffix}: {value}")
+                        # 等待JavaScript事件完成
+                        await asyncio.sleep(2)
+                        logger.info(f"工号填写完成，等待JavaScript事件处理")
+                        
+                        # 重新填写姓名，确保不被JavaScript事件清空
+                        name_field = f"姓名-{traveler_index}"
+                        name_value = self.clean_value_string(row["姓名"])
+                        name_input_id = self.get_object_id(name_field)
+                        if name_input_id and name_value:
+                            await self.fill_input(name_input_id, name_value, title=name_field)
+                            logger.info(f"重新填写{name_field}: {name_value}")
+                            await asyncio.sleep(0.5)
                     else:
                         # 其他字段使用输入框填写
                         await self.fill_input(input_id, value, title=field_with_suffix)
                         logger.info(f"填写{field_with_suffix}: {value}")
+            
+            # 处理当前行的其他字段（非出差人信息字段，但仅限于子序列范围内的字段）
+            logger.info(f"处理第 {row_idx + 1} 行的其他字段")
+            for col in group_data.columns:
+                # 跳过序号列、处理进度列、子序列标记列、出差人信息字段和登录相关字段
+                if (col in [SEQUENCE_COL, "处理进度", "登录界面工号", "登录界面密码", "登录按钮", "网上预约报账按钮", "等待", "申请报销单按钮", "已阅读并同意按钮", "选择业务大类", "报销项目号", "附件张数", "备注", "特殊事项说明", "下一步按钮1", "等待.1"] or 
+                    col.startswith(SUBSEQUENCE_START_COL) or 
+                    col.startswith(SUBSEQUENCE_END_COL) or
+                    col in TRAVELER_FIELDS.keys()):
+                    continue
+                
+                # 检查是否为子序列结束后的字段，如果是则跳过，让后续的正常处理逻辑处理
+                # 注意：这里只跳过真正的子序列结束后的字段，不包括正常的操作字段
+                if col.startswith("下一步按钮") and col != "下一步按钮1":
+                    # 不跳过下一步按钮，让它在后续的正常处理逻辑中处理
+                    pass
+                
+                value = row[col]
+                if pd.notna(value) and value != "":
+                    value_str = self.clean_value_string(value)
+                    
+                    # 为字段名添加后缀（使用固定的子序列索引0）
+                    field_with_suffix = f"{col}-0"
+                    logger.info(f"处理子序列操作: {col} -> {field_with_suffix} = {value_str}")
+                    
+                    # 在标题-ID映射表中查找对应的输入框ID
+                    input_id = self.get_object_id(field_with_suffix)
+                    if not input_id:
+                        logger.warning(f"未找到字段 '{field_with_suffix}' 对应的ID映射")
+                        continue
+                    
+                    # 根据字段类型选择填写方式
+                    # 检查是否为下拉字段（通过字段名或ID模式）
+                    is_dropdown = False
+                    if col in DROPDOWN_FIELDS:
+                        is_dropdown = True
+                    elif col == "省份":  # 省份字段特殊处理
+                        is_dropdown = True
+                    elif input_id and "sf" in input_id:  # 省份字段的ID模式
+                        is_dropdown = True
+                    elif input_id and "hsf" in input_id:  # hsf字段的ID模式
+                        is_dropdown = True
+                    elif input_id and "jtf" in input_id:  # jtf字段的ID模式
+                        is_dropdown = True
+                    
+                    # 检查是否为日期字段
+                    is_date = False
+                    if (input_id and ("date" in input_id.lower() or "startdate" in input_id.lower() or "enddate" in input_id.lower() or 
+                                     input_id.endswith("_startdate") or input_id.endswith("_enddate") or
+                                     "temp-startdate" in input_id or "temp-enddate" in input_id or
+                                     input_id == "formWF_YB6_3492_yc-chr_start1_0" or input_id == "formWF_YB6_3492_yc-chr_end1_0" or
+                                     "start" in input_id or "end" in input_id)):
+                        is_date = True
+                    
+                    if is_date:
+                        # 日期字段使用日历控件
+                        logger.info(f"检测到日期输入框: {input_id} = {value_str}")
+                        try:
+                            await self.select_date_from_calendar(input_id, value_str)
+                            logger.info(f"日期填写完成: {field_with_suffix}")
+                        except Exception as e:
+                            logger.warning(f"日期选择失败，尝试普通输入: {e}")
+                            await self.fill_input(input_id, value_str, title=field_with_suffix)
+                            logger.info(f"填写{field_with_suffix}: {value_str}")
+                    elif is_dropdown:
+                        # 下拉选择
+                        await self.select_dropdown(input_id, value_str)
+                        logger.info(f"选择{field_with_suffix}: {value_str}")
+                    else:
+                        # 普通输入框
+                        await self.fill_input(input_id, value_str, title=field_with_suffix)
+                        logger.info(f"填写{field_with_suffix}: {value_str}")
             
             traveler_index += 1
             
@@ -3143,7 +3345,65 @@ class LoginAutomation:
             if should_break:
                 break
         
+        # 所有字段填写完成
+        logger.info(f"所有字段填写完成")
+        
         logger.info(f"出差人信息填写完成，共处理了 {traveler_index} 个出差人")
+    
+    async def process_remaining_operations(self, group_data: pd.DataFrame):
+        """
+        处理第二种子序列完成后的剩余操作字段
+        
+        Args:
+            group_data: 同一序号下的所有数据行
+        """
+        logger.info("开始处理第二种子序列完成后的剩余操作字段")
+        
+        # 将DataFrame转换为list以便遍历
+        rows = group_data.to_dict('records')
+        columns = list(group_data.columns)
+        
+        i = 0
+        while i < len(rows):
+            row = rows[i]
+            current_sequence = row.get(SEQUENCE_COL, None)
+            logger.info(f"处理第 {i+1} 行数据的剩余操作，序号: {current_sequence}")
+            
+            # 处理当前行的所有列
+            col_idx = 0
+            while col_idx < len(columns):
+                col = columns[col_idx]
+                
+                # 跳过序号列、处理进度列、子序列标记列和出差人信息字段
+                if (col == SEQUENCE_COL or col == "处理进度" or 
+                    col.startswith(SUBSEQUENCE_START_COL) or 
+                    col.startswith(SUBSEQUENCE_END_COL) or
+                    col in TRAVELER_FIELDS.keys()):
+                    col_idx += 1
+                    continue
+                
+                # 跳过登录相关字段
+                if col in ["登录界面工号", "登录界面密码", "登录按钮", "网上预约报账按钮", "等待", "申请报销单按钮", "已阅读并同意按钮", "选择业务大类", "报销项目号", "附件张数", "备注", "特殊事项说明", "下一步按钮1", "等待.1"]:
+                    col_idx += 1
+                    continue
+                
+                # 跳过已经在第二种子序列中处理过的字段
+                if col in ["省份", "出差地点", "起", "迄", "飞机票", "住宿费", "是否安排伙食", "是否安排交通"]:
+                    col_idx += 1
+                    continue
+                
+                value = row[col]
+                if pd.notna(value) and value != "":
+                    value_str = self.clean_value_string(value)
+                    logger.info(f"处理剩余操作: {col} = {value_str}")
+                    await self.process_cell(col, value_str)
+                
+                col_idx += 1
+            
+            # 移动到下一行
+            i += 1
+        
+        logger.info("剩余操作字段处理完成")
     
     async def process_subsequence_logic(self, record_data: pd.DataFrame):
         """
@@ -3158,6 +3418,23 @@ class LoginAutomation:
         for row_idx, row in record_data.iterrows():
             logger.info(f"处理第{row_idx + 1}行数据")
             
+            # 首先检查当前行是否包含第二种子序列开始标记
+            traveler_subsequence_detected = False
+            for col in record_data.columns:
+                if col.startswith(SUBSEQUENCE_START_COL):
+                    subsequence_value = row[col]
+                    if pd.notna(subsequence_value) and subsequence_value != "":
+                        subsequence_value_str = self.clean_value_string(subsequence_value)
+                        if subsequence_value_str == TRAVELER_SUBSEQUENCE_MARKER:
+                            logger.info(f"检测到第二种子序列（出差人信息），列: {col}，开始处理出差人信息填写")
+                            await self.process_traveler_subsequence(record_data, row_idx)
+                            traveler_subsequence_detected = True
+                            break
+            
+            # 如果检测到第二种子序列，跳过当前行的逐列处理
+            if traveler_subsequence_detected:
+                continue
+            
             # 获取列名列表
             columns = list(record_data.columns)
             i = 0
@@ -3166,28 +3443,22 @@ class LoginAutomation:
             while i < len(columns):
                 col = columns[i]
                 
-                # 处理子序列开始列
-                if col == SUBSEQUENCE_START_COL:
+                # 处理子序列开始列（支持自动重命名）
+                if col.startswith(SUBSEQUENCE_START_COL):
                     subsequence_value = row[col]
                     if pd.notna(subsequence_value) and subsequence_value != "":
                         subsequence_value_str = self.clean_value_string(subsequence_value)
                         
-                        # 检查是否为第二种子序列（数字"1"标记）
-                        if subsequence_value_str == TRAVELER_SUBSEQUENCE_MARKER:
-                            logger.info(f"检测到第二种子序列（出差人信息），开始处理出差人信息填写")
-                            await self.process_traveler_subsequence(record_data, row_idx)
-                            # 跳过当前行的其余列，因为已经处理了
-                            i = len(columns)  # 跳到行末
-                            break  # 跳出while循环，继续处理下一行
-                        else:
+                        # 这里只处理第一种子序列（非"1"标记）
+                        if subsequence_value_str != TRAVELER_SUBSEQUENCE_MARKER:
                             logger.info(f"检测到第一种子序列（值: {subsequence_value_str}），继续处理")
                     i += 1
                     continue
                 
-                if col in [SEQUENCE_COL, SUBSEQUENCE_END_COL, "处理进度"]:
+                if col in [SEQUENCE_COL, "处理进度"] or col.startswith(SUBSEQUENCE_END_COL):
                     # 检查是否遇到子序列结束标记，如果遇到则继续在同一行向右处理
-                    if col == SUBSEQUENCE_END_COL and pd.notna(row.get(col)) and row.get(col) != "":
-                        logger.info("检测到子序列结束标记，继续在同一行向右处理")
+                    if col.startswith(SUBSEQUENCE_END_COL) and pd.notna(row.get(col)) and row.get(col) != "":
+                        logger.info(f"检测到子序列结束标记（列: {col}），继续在同一行向右处理")
                     i += 1
                     continue
                 
@@ -3234,9 +3505,77 @@ class LoginAutomation:
                             i += 1
                             continue
                     
-                    # 处理普通列
-                    logger.info(f"处理普通操作: {col} = {value_str}")
-                    await self.process_cell(col, value_str)
+                    # 处理普通列（在子序列中，需要添加序号后缀）
+                    # 检查当前行是否是子序列中的行
+                    is_in_subsequence = False
+                    subsequence_index = 0
+                    current_subsequence_num = 0
+                    
+                    # 检查当前行是否在子序列范围内
+                    # 首先找到所有子序列的开始和结束位置
+                    subsequence_ranges = []
+                    
+                    # 找到所有子序列开始列
+                    start_cols = [c for c in record_data.columns if c.startswith(SUBSEQUENCE_START_COL)]
+                    end_cols = [c for c in record_data.columns if c.startswith(SUBSEQUENCE_END_COL)]
+                    
+                    # 为每个子序列找到开始和结束位置
+                    for seq_idx, start_col in enumerate(start_cols):
+                        start_row_idx = None
+                        end_row_idx = None
+                        
+                        # 找到子序列开始的行
+                        for idx, seq_row in record_data.iterrows():
+                            if pd.notna(seq_row[start_col]) and seq_row[start_col] != "":
+                                start_row_idx = idx
+                                break
+                        
+                        # 找到对应的子序列结束的行
+                        if seq_idx < len(end_cols):
+                            end_col = end_cols[seq_idx]
+                            for idx, seq_row in record_data.iterrows():
+                                if pd.notna(seq_row[end_col]) and seq_row[end_col] != "":
+                                    end_row_idx = idx
+                                    break
+                        
+                        if start_row_idx is not None and end_row_idx is not None:
+                            subsequence_ranges.append((start_row_idx, end_row_idx, seq_idx))
+                    
+                    # 检查当前行属于哪个子序列
+                    for start_row_idx, end_row_idx, subsequence_num in subsequence_ranges:
+                        if start_row_idx <= row_idx <= end_row_idx:
+                            is_in_subsequence = True
+                            current_subsequence_num = subsequence_num
+                            # 计算在当前子序列中的索引（从0开始）
+                            subsequence_index = 0
+                            # 从子序列开始行开始，计算当前行是第几个有数据的行
+                            for check_row_idx in range(start_row_idx, row_idx + 1):
+                                check_row = record_data.iloc[check_row_idx]
+                                # 检查这一行是否有有效数据（除了子序列标记列）
+                                has_data = False
+                                for check_col in record_data.columns:
+                                    if (check_col not in [SEQUENCE_COL, "处理进度"] and 
+                                        not check_col.startswith(SUBSEQUENCE_START_COL) and 
+                                        not check_col.startswith(SUBSEQUENCE_END_COL) and
+                                        pd.notna(check_row[check_col]) and check_row[check_col] != ""):
+                                        has_data = True
+                                        break
+                                if has_data:
+                                    subsequence_index += 1
+                            # 减1是因为我们要从0开始计数
+                            subsequence_index = max(0, subsequence_index - 1)
+                            logger.info(f"当前行 {row_idx} 属于子序列 {subsequence_num}，索引: {subsequence_index}")
+                            break
+                    
+                    if is_in_subsequence:
+                        # 在子序列中，使用带序号后缀的字段名
+                        field_with_suffix = f"{col}-{subsequence_index}"
+                        logger.info(f"处理子序列操作: {col} -> {field_with_suffix} = {value_str}")
+                        await self.process_cell(field_with_suffix, value_str)
+                    else:
+                        # 不在子序列中，使用原始字段名
+                        logger.info(f"处理普通操作: {col} = {value_str}")
+                        await self.process_cell(col, value_str)
                 
                 i += 1
     
@@ -3263,9 +3602,11 @@ class LoginAutomation:
                     raise ValueError(f"不支持的浏览器类型: {BROWSER_TYPE}")
                 
                 self.page = await self.browser.new_page()
+                # 设置页面默认超时时间为3秒
+                self.page.set_default_timeout(3000)
                 
                 # 导航到目标页面
-                await self.page.goto(target_url)
+                await self.page.goto(target_url, timeout=10000)
                 logger.info(f"成功导航到页面: {target_url}")
                 
                 # 等待页面加载
